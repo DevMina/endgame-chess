@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Endgame — Chess, Local &amp; Online</title>
+<meta name="description" content="Play chess against the computer, pass-and-play locally, or challenge a friend online with a shared link.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#17140f">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Endgame">
+</head>
+<body>
+
+<div class="grain"></div>
+
+<!-- ============ SCREEN: HOME ============ -->
+<main id="screen-home" class="screen screen-home">
+  <header class="brand">
+    <div class="brand-mark" aria-hidden="true">♞</div>
+    <div class="brand-text">
+      <h1>Endgame</h1>
+      <p class="brand-sub">A quiet board for sharp games</p>
+    </div>
+  </header>
+
+  <div class="mode-grid" role="list">
+    <button class="mode-plaque" id="mode-single" role="listitem">
+      <span class="plaque-eyebrow">I</span>
+      <span class="plaque-icon" aria-hidden="true">♟</span>
+      <span class="plaque-title">Single Player</span>
+      <span class="plaque-desc">Test your line against the engine. Three strengths.</span>
+    </button>
+
+    <button class="mode-plaque" id="mode-local" role="listitem">
+      <span class="plaque-eyebrow">II</span>
+      <span class="plaque-icon" aria-hidden="true">♜</span>
+      <span class="plaque-title">Two Player — Same Screen</span>
+      <span class="plaque-desc">Pass the device. No clock, no mercy.</span>
+    </button>
+
+    <button class="mode-plaque" id="mode-online" role="listitem">
+      <span class="plaque-eyebrow">III</span>
+      <span class="plaque-icon" aria-hidden="true">♝</span>
+      <span class="plaque-title">Play Online</span>
+      <span class="plaque-desc">Open a table, send the link, play live. No account needed.</span>
+    </button>
+  </div>
+
+  <footer class="home-footer">
+    <span>Runs entirely in your browser. Online games connect peer&#8209;to&#8209;peer &mdash; no server holds your moves.</span>
+  </footer>
+</main>
+
+<!-- ============ SCREEN: SINGLE PLAYER SETUP ============ -->
+<section id="screen-single-setup" class="screen screen-setup hidden">
+  <button class="back-link" data-back="home">&larr; Back</button>
+  <h2 class="setup-title">Single Player</h2>
+
+  <div class="setup-block">
+    <span class="setup-label">Play as</span>
+    <div class="pill-row" id="single-color-row">
+      <button class="pill" data-color="w">White</button>
+      <button class="pill" data-color="b">Black</button>
+      <button class="pill" data-color="random">Random</button>
+    </div>
+  </div>
+
+  <div class="setup-block">
+    <span class="setup-label">Engine strength</span>
+    <div class="pill-row" id="single-difficulty-row">
+      <button class="pill" data-difficulty="1">Easy</button>
+      <button class="pill" data-difficulty="2">Medium</button>
+      <button class="pill" data-difficulty="3">Hard</button>
+    </div>
+  </div>
+
+  <button class="cta-button" id="single-start">Set up the board</button>
+</section>
+
+<!-- ============ SCREEN: ONLINE LOBBY ============ -->
+<section id="screen-online-lobby" class="screen screen-setup hidden">
+  <button class="back-link" data-back="home">&larr; Back</button>
+  <h2 class="setup-title">Play Online</h2>
+
+  <div id="lobby-choice" class="setup-block">
+    <span class="setup-label">Host a table, or join one?</span>
+    <div class="pill-row">
+      <button class="pill" id="lobby-host-btn">Host a new table</button>
+      <button class="pill" id="lobby-join-btn">I have a link</button>
+    </div>
+  </div>
+
+  <div id="lobby-hosting" class="lobby-panel hidden">
+    <p class="lobby-status" id="lobby-host-status">Opening a table&hellip;</p>
+    <div class="link-box hidden" id="lobby-link-box">
+      <label for="lobby-link-input">Send this link to your opponent</label>
+      <div class="link-row">
+        <input type="text" id="lobby-link-input" readonly>
+        <button class="pill pill-small" id="lobby-copy-btn">Copy</button>
+      </div>
+      <p class="lobby-hint">You'll play White. The board opens as soon as they join.</p>
+    </div>
+  </div>
+
+  <div id="lobby-joining" class="lobby-panel hidden">
+    <div class="link-box" id="lobby-join-input-box">
+      <label for="lobby-join-input">Paste the link or table code you were sent</label>
+      <div class="link-row">
+        <input type="text" id="lobby-join-input" placeholder="endgame-xxxxxx or full link">
+        <button class="pill pill-small" id="lobby-join-submit">Join</button>
+      </div>
+    </div>
+    <p class="lobby-status" id="lobby-join-status"></p>
+  </div>
+</section>
+
+<!-- ============ SCREEN: GAME ============ -->
+<section id="screen-game" class="screen screen-game hidden">
+
+  <header class="game-topbar">
+    <button class="back-link" id="game-quit">&larr; Leave table</button>
+    <div class="game-mode-tag" id="game-mode-tag"></div>
+    <div class="thread" id="thread-indicator" hidden>
+      <span class="thread-node" data-role="you">You</span>
+      <span class="thread-line"><span class="thread-pulse"></span></span>
+      <span class="thread-node" data-role="opp">Opponent</span>
+    </div>
+  </header>
+
+  <div class="game-layout">
+
+    <div class="board-column">
+      <div class="turn-banner" id="turn-banner" role="status" aria-live="polite">White to move</div>
+      <div class="viewing-banner hidden" id="viewing-banner">
+        <span>Viewing an earlier position</span>
+        <button class="pill pill-small" id="btn-return-live">Back to current</button>
+      </div>
+      <div class="status-banner hidden" id="reconnect-banner" role="status" aria-live="polite">
+        <span id="reconnect-text">Opponent disconnected</span>
+        <button class="pill pill-small hidden" id="btn-reconnect-retry">Try again</button>
+      </div>
+      <div class="status-banner hidden" id="draw-offer-banner" role="status" aria-live="polite">
+        <span>Your opponent offered a draw</span>
+        <button class="pill pill-small" id="draw-accept-btn">Accept</button>
+        <button class="pill pill-small" id="draw-decline-btn">Decline</button>
+      </div>
+      <div class="board-wrap" id="board-wrap">
+        <div class="board" id="board" role="grid" aria-label="Chess board"></div>
+        <div class="promo-picker hidden" id="promo-picker"></div>
+      </div>
+      <div class="board-controls">
+        <button class="pill pill-small" id="btn-undo">Undo</button>
+        <button class="pill pill-small" id="btn-flip">Flip board</button>
+        <button class="pill pill-small" id="btn-newgame">New game</button>
+        <button class="pill pill-small hidden" id="btn-draw-offer">Offer draw</button>
+        <button class="pill pill-small pill-danger" id="btn-resign">Resign</button>
+      </div>
+    </div>
+
+    <aside class="ledger">
+      <div class="ledger-section">
+        <h3 class="ledger-heading">Captured</h3>
+        <div class="captures" id="captures-white"></div>
+        <div class="captures" id="captures-black"></div>
+      </div>
+
+      <div class="ledger-section ledger-moves">
+        <div class="ledger-heading-row">
+          <h3 class="ledger-heading">Moves</h3>
+          <button class="pill pill-small" id="btn-copy-pgn">Copy PGN</button>
+        </div>
+        <ol class="move-list" id="move-list"></ol>
+      </div>
+
+      <div class="ledger-section ledger-chat hidden" id="chat-section">
+        <h3 class="ledger-heading">Table talk</h3>
+        <div class="chat-log" id="chat-log"></div>
+        <form class="chat-form" id="chat-form">
+          <input type="text" id="chat-input" maxlength="140" placeholder="Say something&hellip;" autocomplete="off">
+          <button type="submit" class="pill pill-small">Send</button>
+        </form>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ OVERLAY: GAME OVER ============ -->
+<div id="overlay-gameover" class="overlay hidden">
+  <div class="overlay-card">
+    <p class="overlay-eyebrow" id="gameover-eyebrow">Checkmate</p>
+    <h2 id="gameover-title">White wins</h2>
+    <p id="gameover-detail"></p>
+    <div class="overlay-actions">
+      <button class="cta-button" id="gameover-rematch">Play again</button>
+      <button class="pill" id="gameover-home">Back to start</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TOAST ============ -->
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

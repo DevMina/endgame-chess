@@ -65,6 +65,7 @@ function saveGame() {
       color: state.localColor,
       difficulty: state.difficulty,
       history: state.chess.history(),
+      clock: state.clock ? { ...state.clock, savedAt: Date.now() } : null,
     }));
   } catch (_) {
     // Storage unavailable (private browsing, quota, etc.) — resuming just won't be offered next time.
@@ -90,11 +91,12 @@ function loadSavedGame() {
 
 function describeSavedGame(data) {
   const moveNo = Math.ceil(data.history.length / 2);
+  const clockNote = data.clock ? ` \u00b7 ${Math.round(data.clock.base / 60)} min clock` : "";
   if (data.mode === "single") {
     const labels = { 1: "Easy", 2: "Medium", 3: "Hard" };
-    return `Single Player \u2014 ${labels[data.difficulty]} \u00b7 you're ${data.color === "w" ? "White" : "Black"} \u00b7 move ${moveNo}`;
+    return `Single Player \u2014 ${labels[data.difficulty]} \u00b7 you're ${data.color === "w" ? "White" : "Black"} \u00b7 move ${moveNo}${clockNote}`;
   }
-  return `Two Player \u2014 Same Screen \u00b7 move ${moveNo}`;
+  return `Two Player \u2014 Same Screen \u00b7 move ${moveNo}${clockNote}`;
 }
 
 function refreshResumeBanner() {
@@ -110,7 +112,7 @@ function refreshResumeBanner() {
 $("btn-resume").addEventListener("click", () => {
   const data = loadSavedGame();
   if (!data) { hide($("resume-banner")); return; }
-  startGame({ mode: data.mode, color: data.color, difficulty: data.difficulty, resumeHistory: data.history });
+  startGame({ mode: data.mode, color: data.color, difficulty: data.difficulty, resumeHistory: data.history, resumeClock: data.clock || null });
 });
 $("btn-resume-discard").addEventListener("click", () => {
   clearSavedGame();
@@ -130,6 +132,8 @@ const state = {
   onlineConnected: false,
   gameOver: false, // true once checkmate/stalemate/draw/resign has ended the current game
   viewingPly: null, // null = showing the live position; otherwise an index into history() being browsed read-only
+  analysisOn: false,
+  clock: null, // { base, remaining: { w, b } } in seconds, or null if this game has no time control
 };
 
 // Reconstructs the position after `ply` half-moves of the live game (0 = the
@@ -197,13 +201,69 @@ function cancelPendingAiMove() {
 }
 
 /* ---------------------------------------------------------
+   Analysis mode — a separate worker from the AI opponent's, so browsing
+   the move list and reviewing positions never contends with (or is
+   confused for) the engine's actual move computation.
+--------------------------------------------------------- */
+let analysisWorker = null;
+function getAnalysisWorker() {
+  if (!analysisWorker) {
+    analysisWorker = new Worker(new URL("./ai-worker.js", import.meta.url), { type: "module" });
+  }
+  return analysisWorker;
+}
+let analysisSeq = 0;
+const ANALYSIS_TIME_BUDGET = 600; // ms — fast enough to feel responsive while stepping through a game
+
+function formatEval(scoreCp, mate) {
+  if (mate) return scoreCp > 0 ? "Mate for White" : "Mate for Black";
+  const pawns = scoreCp / 100;
+  const sign = pawns > 0 ? "+" : "";
+  return `${sign}${pawns.toFixed(1)}`;
+}
+
+function updateAnalysis() {
+  if (!state.analysisOn) return;
+  const chess = getDisplayGame();
+  const seq = ++analysisSeq;
+  $("eval-text").textContent = "Analyzing\u2026";
+  const worker = getAnalysisWorker();
+  const requestId = `a${seq}`;
+  const handler = (e) => {
+    if (e.data.requestId !== requestId) return;
+    worker.removeEventListener("message", handler);
+    if (seq !== analysisSeq) return; // position moved on while this was in flight — discard
+    if (!e.data.ok || !e.data.analysis) { $("eval-text").textContent = "Couldn't analyze this position."; return; }
+    const { score, mate, move } = e.data.analysis;
+    const clamped = Math.max(-1000, Math.min(1000, score));
+    const whiteShare = mate ? (score > 0 ? 100 : 0) : 50 + 50 * Math.tanh(clamped / 400);
+    $("eval-bar-fill").style.width = `${whiteShare}%`;
+    const evalLabel = formatEval(score, mate);
+    $("eval-text").textContent = move ? `${evalLabel} \u00b7 best is ${move.san}` : evalLabel;
+  };
+  worker.addEventListener("message", handler);
+  worker.postMessage({ type: "analyze", fen: chess.fen(), timeBudget: ANALYSIS_TIME_BUDGET, requestId });
+}
+
+$("btn-analyze").addEventListener("click", () => {
+  state.analysisOn = !state.analysisOn;
+  $("btn-analyze").classList.toggle("selected", state.analysisOn);
+  if (state.analysisOn) {
+    show($("analysis-panel"));
+    updateAnalysis();
+  } else {
+    hide($("analysis-panel"));
+    analysisSeq++; // invalidate any in-flight request
+  }
+});
+
+/* ---------------------------------------------------------
    Home screen
 --------------------------------------------------------- */
-$("mode-single").addEventListener("click", () => {
-  resetSetupPills();
-  goTo("singleSetup");
-});
-$("mode-local").addEventListener("click", () => startGame({ mode: "local" }));
+const CLOCK_PRESETS = { none: null, "3": 180, "5": 300, "10": 600 }; // base seconds per side; no increment
+
+$("mode-single").addEventListener("click", () => enterSetup("single"));
+$("mode-local").addEventListener("click", () => enterSetup("local"));
 $("mode-online").addEventListener("click", () => {
   goTo("onlineLobby");
   resetLobby();
@@ -217,16 +277,29 @@ document.querySelectorAll('[data-back="home"]').forEach((btn) =>
 );
 
 /* ---------------------------------------------------------
-   Single player setup
+   Single player / local setup (shared screen — local just hides the
+   opponent-strength and color pickers and keeps the clock picker)
 --------------------------------------------------------- */
+let setupTargetMode = "single";
 let setupColor = "w";
 let setupDifficulty = 2;
+let setupClockKey = "none";
+
+function enterSetup(targetMode) {
+  setupTargetMode = targetMode;
+  resetSetupPills();
+  $("setup-title").textContent = targetMode === "single" ? "Single Player" : "Two Player \u2014 Same Screen";
+  document.querySelectorAll(".single-only").forEach((el) => el.classList.toggle("hidden", targetMode !== "single"));
+  goTo("singleSetup");
+}
 
 function resetSetupPills() {
   setupColor = "w";
   setupDifficulty = 2;
+  setupClockKey = "none";
   document.querySelectorAll("#single-color-row .pill").forEach((p) => p.classList.toggle("selected", p.dataset.color === "w"));
   document.querySelectorAll("#single-difficulty-row .pill").forEach((p) => p.classList.toggle("selected", p.dataset.difficulty === "2"));
+  document.querySelectorAll("#setup-clock-row .pill").forEach((p) => p.classList.toggle("selected", p.dataset.clock === "none"));
 }
 
 document.querySelectorAll("#single-color-row .pill").forEach((p) =>
@@ -241,10 +314,21 @@ document.querySelectorAll("#single-difficulty-row .pill").forEach((p) =>
     document.querySelectorAll("#single-difficulty-row .pill").forEach((x) => x.classList.toggle("selected", x === p));
   })
 );
+document.querySelectorAll("#setup-clock-row .pill").forEach((p) =>
+  p.addEventListener("click", () => {
+    setupClockKey = p.dataset.clock;
+    document.querySelectorAll("#setup-clock-row .pill").forEach((x) => x.classList.toggle("selected", x === p));
+  })
+);
 
 $("single-start").addEventListener("click", () => {
-  const color = setupColor === "random" ? (Math.random() < 0.5 ? "w" : "b") : setupColor;
-  startGame({ mode: "single", color, difficulty: setupDifficulty });
+  const clock = CLOCK_PRESETS[setupClockKey];
+  if (setupTargetMode === "local") {
+    startGame({ mode: "local", clock });
+  } else {
+    const color = setupColor === "random" ? (Math.random() < 0.5 ? "w" : "b") : setupColor;
+    startGame({ mode: "single", color, difficulty: setupDifficulty, clock });
+  }
 });
 
 /* ---------------------------------------------------------
@@ -258,7 +342,17 @@ function resetLobby() {
   hide($("lobby-link-box"));
   $("lobby-join-input").value = "";
   $("lobby-join-status").textContent = "";
+  lobbyClockKey = "none";
+  document.querySelectorAll("#lobby-clock-row .pill").forEach((p) => p.classList.toggle("selected", p.dataset.clock === "none"));
 }
+
+let lobbyClockKey = "none";
+document.querySelectorAll("#lobby-clock-row .pill").forEach((p) =>
+  p.addEventListener("click", () => {
+    lobbyClockKey = p.dataset.clock;
+    document.querySelectorAll("#lobby-clock-row .pill").forEach((x) => x.classList.toggle("selected", x === p));
+  })
+);
 
 $("lobby-host-btn").addEventListener("click", async () => {
   hide($("lobby-choice"));
@@ -272,8 +366,13 @@ $("lobby-host-btn").addEventListener("click", async () => {
     $("lobby-host-status").textContent = "Table open. Waiting for your opponent to join\u2026";
     $("lobby-link-input").value = link;
     show($("lobby-link-box"));
+    let tableOpened = false;
     online.on("connected", () => {
-      startGame({ mode: "online", color: "w", online });
+      if (tableOpened) return; // a later reconnect fires "connected" again too — that's handled inside wireOnlineMessages, not here
+      tableOpened = true;
+      const clock = CLOCK_PRESETS[lobbyClockKey];
+      online.send({ type: "game-config", clock });
+      startGame({ mode: "online", color: "w", online, clock });
     });
     online.on("error", () => toast("Connection trouble \u2014 try hosting again."));
   } catch (err) {
@@ -305,8 +404,16 @@ async function doJoin(raw) {
   const online = new OnlineGame();
   state.online = online;
   online.on("error", () => { $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again."; });
+  let tableOpened = false;
   online.on("connected", () => {
-    startGame({ mode: "online", color: "b", online });
+    // Wait for the host's table settings (clock, etc.) before actually starting.
+    $("lobby-join-status").textContent = "Connected. Waiting for the table to open\u2026";
+  });
+  online.on("message", (msg) => {
+    if (msg.type === "game-config" && !tableOpened) {
+      tableOpened = true;
+      startGame({ mode: "online", color: "b", online, clock: msg.clock });
+    }
   });
   try {
     await online.join(roomId);
@@ -345,7 +452,7 @@ refreshResumeBanner();
 /* ---------------------------------------------------------
    Starting / resetting a game
 --------------------------------------------------------- */
-function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHistory = null }) {
+function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHistory = null, clock = null, resumeClock = null }) {
   cancelPendingAiMove();
   state.mode = mode;
   state.chess = createGame();
@@ -359,6 +466,22 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
   state.viewingPly = null;
   state.online = online;
   state.onlineConnected = mode === "online";
+
+  stopClockTimer();
+  if (resumeClock) {
+    state.clock = { base: resumeClock.base, remaining: { ...resumeClock.remaining } };
+    if (resumeClock.savedAt) {
+      // A real clock keeps running even while the tab is closed — charge the
+      // wall-clock gap since the last save to whoever was on move then.
+      const gapSeconds = (Date.now() - resumeClock.savedAt) / 1000;
+      const turnAtSave = state.chess.turn();
+      state.clock.remaining[turnAtSave] = Math.max(0, state.clock.remaining[turnAtSave] - gapSeconds);
+    }
+  } else if (clock) {
+    state.clock = { base: clock, remaining: { w: clock, b: clock } };
+  } else {
+    state.clock = null;
+  }
 
   boardUI.setOrientation(mode === "online" ? color : "w");
   if (resumeHistory && resumeHistory.length) {
@@ -376,10 +499,16 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
   const undoBtn = $("btn-undo");
   const newGameBtn = $("btn-newgame");
   const drawOfferBtn = $("btn-draw-offer");
+  const analyzeBtn = $("btn-analyze");
 
   stopReconnectUI();
   hideDrawOfferBanner();
   drawOfferBtn.disabled = false;
+
+  state.analysisOn = false;
+  analyzeBtn.classList.remove("selected");
+  hide($("analysis-panel"));
+  analysisSeq++; // invalidate any analysis still in flight from the previous game
 
   if (mode === "single") {
     const labels = { 1: "Easy", 2: "Medium", 3: "Hard" };
@@ -389,6 +518,7 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
     show(undoBtn);
     show(newGameBtn);
     hide(drawOfferBtn);
+    show(analyzeBtn);
   } else if (mode === "local") {
     modeTag.textContent = "Two Player \u2014 Same Screen";
     hide(chatSection);
@@ -396,6 +526,7 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
     show(undoBtn);
     show(newGameBtn);
     hide(drawOfferBtn);
+    show(analyzeBtn);
   } else if (mode === "online") {
     modeTag.textContent = `Online \u2014 you're ${color === "w" ? "White" : "Black"}`;
     show(chatSection);
@@ -405,6 +536,7 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
     hide(undoBtn); // undo would desync the peer
     hide(newGameBtn); // use "Play again" from the game-over overlay instead
     show(drawOfferBtn);
+    hide(analyzeBtn); // kept out of live online play so it can't work as a real-time assist against a human opponent
     $("chat-log").innerHTML = "";
     wireOnlineMessages(online);
   }
@@ -412,6 +544,13 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
   renderAll();
   goTo("game");
   saveGame(); // persist the fresh or resumed position as the new baseline
+
+  if (state.clock && state.clock.remaining[state.chess.turn()] <= 0) {
+    const winner = state.chess.turn() === "w" ? "Black" : "White";
+    showGameOver({ eyebrow: "Time", title: `${winner} wins on time`, detail: "The clock ran out while this game was closed." });
+    return;
+  }
+  if (state.clock) startClockTimer();
 
   if (mode === "single" && state.localColor !== state.chess.turn()) {
     requestAiMove();
@@ -426,6 +565,11 @@ function wireOnlineMessages(online) {
       if (mv) {
         state.viewingPly = null;
         boardUI.setLastMove(mv.from, mv.to);
+        if (state.clock && msg.clockRemaining) {
+          state.clock.remaining.w = msg.clockRemaining.w;
+          state.clock.remaining.b = msg.clockRemaining.b;
+          clockLastTick = Date.now(); // don't double-charge the network gap since our last local tick
+        }
         renderAll();
         checkGameOver();
       }
@@ -470,6 +614,13 @@ function wireOnlineMessages(online) {
       state.viewingPly = null;
       hideDrawOfferBanner();
       $("btn-draw-offer").disabled = false;
+      if (msg.clockBase) {
+        state.clock = { base: msg.clockBase, remaining: { w: msg.clockBase, b: msg.clockBase } };
+        startClockTimer();
+      } else {
+        state.clock = null;
+        stopClockTimer();
+      }
       boardUI.setLastMove(null, null);
       boardUI.clearSelection();
       renderAll();
@@ -516,6 +667,66 @@ function wireOnlineMessages(online) {
     toast("Lost connection to the matchmaking server \u2014 reconnecting\u2026");
     reconnectHostBroker(online);
   });
+}
+
+/* ---------------------------------------------------------
+   Game clock (optional per-game time control). Each peer in an online game
+   runs its own local timer; the "move" message carries a remaining-time
+   snapshot so both sides self-correct for drift rather than needing a
+   server-side authority.
+--------------------------------------------------------- */
+let clockTimerId = null;
+let clockLastTick = null;
+
+function clockShouldRun() {
+  return !!(state.clock && state.mode && !state.gameOver && state.viewingPly === null);
+}
+
+function startClockTimer() {
+  clockLastTick = Date.now();
+  if (clockTimerId) return;
+  clockTimerId = setInterval(tickClock, 250);
+}
+
+function stopClockTimer() {
+  if (clockTimerId) { clearInterval(clockTimerId); clockTimerId = null; }
+  clockLastTick = null;
+}
+
+function tickClock() {
+  if (!clockShouldRun()) { clockLastTick = Date.now(); return; }
+  const now = Date.now();
+  const elapsed = (now - clockLastTick) / 1000;
+  clockLastTick = now;
+  const turn = state.chess.turn();
+  state.clock.remaining[turn] = Math.max(0, state.clock.remaining[turn] - elapsed);
+  renderClocks();
+  if (state.clock.remaining[turn] <= 0) {
+    stopClockTimer();
+    const winner = turn === "w" ? "Black" : "White";
+    showGameOver({ eyebrow: "Time", title: `${winner} wins on time`, detail: `${turn === "w" ? "White" : "Black"} ran out of time.` });
+  }
+}
+
+function formatClock(seconds) {
+  const s = Math.max(0, Math.ceil(seconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
+
+function renderClocks() {
+  const row = $("clocks-row");
+  if (!state.clock) { hide(row); return; }
+  show(row);
+  const turn = state.chess.turn();
+  const live = state.viewingPly === null && !state.gameOver;
+  $("clock-white-time").textContent = formatClock(state.clock.remaining.w);
+  $("clock-black-time").textContent = formatClock(state.clock.remaining.b);
+  $("clock-white").classList.toggle("clock-active", live && turn === "w");
+  $("clock-black").classList.toggle("clock-active", live && turn === "b");
+  $("clock-white").classList.toggle("clock-low", state.clock.remaining.w <= 30 && state.clock.remaining.w > 0);
+  $("clock-black").classList.toggle("clock-low", state.clock.remaining.b <= 30 && state.clock.remaining.b > 0);
 }
 
 /* ---------------------------------------------------------
@@ -616,7 +827,13 @@ function attemptLocalMove({ from, to, promotion }) {
   renderAll();
 
   if (state.mode === "online") {
-    state.online.send({ type: "move", from: mv.from, to: mv.to, promotion: promotion || null });
+    state.online.send({
+      type: "move",
+      from: mv.from,
+      to: mv.to,
+      promotion: promotion || null,
+      clockRemaining: state.clock ? { w: state.clock.remaining.w, b: state.clock.remaining.b } : null,
+    });
   }
 
   if (checkGameOver()) return;
@@ -648,6 +865,7 @@ function requestAiMove() {
   };
   worker.addEventListener("message", handler);
   worker.postMessage({
+    type: "move",
     fen: state.chess.fen(),
     timeBudget: timeBudgetByDifficulty[state.difficulty],
     addNoise: noiseByDifficulty[state.difficulty],
@@ -680,19 +898,22 @@ function showGameOver({ eyebrow, title, detail }) {
   state.gameOver = true;
   stopReconnectUI();
   hideDrawOfferBanner();
+  stopClockTimer();
   clearSavedGame();
   $("gameover-eyebrow").textContent = eyebrow;
   $("gameover-title").textContent = title;
   $("gameover-detail").textContent = detail;
   show($("overlay-gameover"));
+  renderClocks(); // reflect the final (paused, non-live) clock state
 }
 
 $("gameover-rematch").addEventListener("click", () => {
   hide($("overlay-gameover"));
+  const clockBase = state.clock ? state.clock.base : null;
   if (state.mode === "single") {
-    startGame({ mode: "single", color: state.localColor, difficulty: state.difficulty });
+    startGame({ mode: "single", color: state.localColor, difficulty: state.difficulty, clock: clockBase });
   } else if (state.mode === "local") {
-    startGame({ mode: "local" });
+    startGame({ mode: "local", clock: clockBase });
   } else if (state.mode === "online") {
     cancelPendingAiMove();
     state.chess = createGame();
@@ -700,10 +921,14 @@ $("gameover-rematch").addEventListener("click", () => {
     state.viewingPly = null;
     hideDrawOfferBanner();
     $("btn-draw-offer").disabled = false;
+    if (state.clock) {
+      state.clock.remaining = { w: state.clock.base, b: state.clock.base };
+      startClockTimer();
+    }
     boardUI.setLastMove(null, null);
     boardUI.clearSelection();
     renderAll();
-    state.online.send({ type: "rematch" });
+    state.online.send({ type: "rematch", clockBase });
     toast("Rematch started");
   }
 });
@@ -752,8 +977,9 @@ $("btn-copy-pgn").addEventListener("click", async () => {
   }
 });
 $("btn-newgame").addEventListener("click", () => {
-  if (state.mode === "single") startGame({ mode: "single", color: state.localColor, difficulty: state.difficulty });
-  else startGame({ mode: "local" });
+  const clockBase = state.clock ? state.clock.base : null;
+  if (state.mode === "single") startGame({ mode: "single", color: state.localColor, difficulty: state.difficulty, clock: clockBase });
+  else startGame({ mode: "local", clock: clockBase });
 });
 $("btn-resign").addEventListener("click", () => {
   if (state.gameOver) return;
@@ -770,6 +996,8 @@ $("btn-resign").addEventListener("click", () => {
 });
 $("game-quit").addEventListener("click", () => {
   stopReconnectUI();
+  saveGame(); // checkpoint the freshest clock reading before stopping the timer
+  stopClockTimer();
   if (state.online) { state.online.close(); state.online = null; }
   hide($("overlay-gameover"));
   refreshResumeBanner();
@@ -810,7 +1038,9 @@ function renderAll() {
   renderTurnBanner();
   renderCaptures();
   renderMoveList();
+  renderClocks();
   $("board-wrap").classList.toggle("viewing", state.viewingPly !== null);
+  if (state.analysisOn) updateAnalysis();
 }
 
 function renderTurnBanner() {

@@ -377,7 +377,34 @@ a { color: var(--brass-bright); }
   flex-direction: column;
   align-items: center;
   gap: 1rem;
+  width: 100%;
+  max-width: 420px;
+  min-width: 0; /* allow this flex item to shrink below its children's content size (see clocks-row/analysis-panel/board-controls) */
 }
+
+.clocks-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  width: 100%;
+  max-width: 420px;
+}
+.clock-box {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.8rem;
+}
+.clock-label { font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.clock-time { font-size: 1.1rem; color: var(--ivory-dim); }
+.clock-box.clock-active { border-color: var(--brass-bright); }
+.clock-box.clock-active .clock-time { color: var(--brass-bright); }
+.clock-box.clock-low .clock-time { color: var(--check-red); }
 
 .turn-banner {
   font-family: var(--font-display);
@@ -478,6 +505,34 @@ a { color: var(--brass-bright); }
   gap: 0.6rem;
   flex-wrap: wrap;
   justify-content: center;
+}
+
+.analysis-panel {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.eval-bar {
+  width: 100%;
+  height: 10px;
+  background: #171310;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.eval-bar-fill {
+  height: 100%;
+  width: 50%;
+  background: var(--ivory-dim);
+  transition: width 0.4s ease;
+}
+.eval-text {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ivory-dim);
+  text-align: center;
 }
 
 /* ---------- Ledger sidebar ---------- */

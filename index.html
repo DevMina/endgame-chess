@@ -71,9 +71,9 @@
 <!-- ============ SCREEN: SINGLE PLAYER SETUP ============ -->
 <section id="screen-single-setup" class="screen screen-setup hidden">
   <button class="back-link" data-back="home">&larr; Back</button>
-  <h2 class="setup-title">Single Player</h2>
+  <h2 class="setup-title" id="setup-title">Single Player</h2>
 
-  <div class="setup-block">
+  <div class="setup-block single-only">
     <span class="setup-label">Play as</span>
     <div class="pill-row" id="single-color-row">
       <button class="pill" data-color="w">White</button>
@@ -82,12 +82,22 @@
     </div>
   </div>
 
-  <div class="setup-block">
+  <div class="setup-block single-only">
     <span class="setup-label">Engine strength</span>
     <div class="pill-row" id="single-difficulty-row">
       <button class="pill" data-difficulty="1">Easy</button>
       <button class="pill" data-difficulty="2">Medium</button>
       <button class="pill" data-difficulty="3">Hard</button>
+    </div>
+  </div>
+
+  <div class="setup-block">
+    <span class="setup-label">Clock</span>
+    <div class="pill-row" id="setup-clock-row">
+      <button class="pill" data-clock="none">No clock</button>
+      <button class="pill" data-clock="3">3 min</button>
+      <button class="pill" data-clock="5">5 min</button>
+      <button class="pill" data-clock="10">10 min</button>
     </div>
   </div>
 
@@ -104,6 +114,16 @@
     <div class="pill-row">
       <button class="pill" id="lobby-host-btn">Host a new table</button>
       <button class="pill" id="lobby-join-btn">I have a link</button>
+    </div>
+  </div>
+
+  <div id="lobby-clock-block" class="setup-block">
+    <span class="setup-label">Clock (used if you host)</span>
+    <div class="pill-row" id="lobby-clock-row">
+      <button class="pill" data-clock="none">No clock</button>
+      <button class="pill" data-clock="3">3 min</button>
+      <button class="pill" data-clock="5">5 min</button>
+      <button class="pill" data-clock="10">10 min</button>
     </div>
   </div>
 
@@ -147,6 +167,10 @@
   <div class="game-layout">
 
     <div class="board-column">
+      <div class="clocks-row hidden" id="clocks-row">
+        <div class="clock-box" id="clock-black"><span class="clock-label">Black</span><span class="clock-time" id="clock-black-time">--:--</span></div>
+        <div class="clock-box" id="clock-white"><span class="clock-label">White</span><span class="clock-time" id="clock-white-time">--:--</span></div>
+      </div>
       <div class="turn-banner" id="turn-banner" role="status" aria-live="polite">White to move</div>
       <div class="viewing-banner hidden" id="viewing-banner">
         <span>Viewing an earlier position</span>
@@ -170,7 +194,12 @@
         <button class="pill pill-small" id="btn-flip">Flip board</button>
         <button class="pill pill-small" id="btn-newgame">New game</button>
         <button class="pill pill-small hidden" id="btn-draw-offer">Offer draw</button>
+        <button class="pill pill-small" id="btn-analyze">Analyze</button>
         <button class="pill pill-small pill-danger" id="btn-resign">Resign</button>
+      </div>
+      <div class="analysis-panel hidden" id="analysis-panel">
+        <div class="eval-bar" aria-hidden="true"><div class="eval-bar-fill" id="eval-bar-fill"></div></div>
+        <div class="eval-text" id="eval-text">Analyzing&hellip;</div>
       </div>
     </div>
 

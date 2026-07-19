@@ -193,14 +193,12 @@ function search(chess, depth, alpha, beta, maximizing, tt, deadline) {
 
 const MAX_DEPTH_CAP = 10;
 
-function getBestMove(fen, timeBudgetMs, addNoise) {
-  const chess = new Chess(fen);
-  const color = chess.turn();
-  const maximizing = color === "w";
-
-  const bookMove = pickBookMove(chess);
-  if (bookMove) return bookMove;
-
+// Runs the iterative-deepening root search: for each legal move, how good is
+// the resulting position (from White's perspective) with best play from
+// there? Shared by move selection (pick the top result) and analysis
+// (report the top result's score as the position's evaluation).
+function rootSearch(chess, timeBudgetMs) {
+  const maximizing = chess.turn() === "w";
   const tt = new Map();
   const deadline = Date.now() + timeBudgetMs;
   let moves = orderMoves(chess.moves({ verbose: true }));
@@ -232,9 +230,18 @@ function getBestMove(fen, timeBudgetMs, addNoise) {
     depth++;
   }
 
+  return { bestDepthResults, fallbackMoves: moves };
+}
+
+function getBestMove(fen, timeBudgetMs, addNoise) {
+  const chess = new Chess(fen);
+  const bookMove = pickBookMove(chess);
+  if (bookMove) return bookMove;
+
+  const { bestDepthResults, fallbackMoves } = rootSearch(chess, timeBudgetMs);
   if (!bestDepthResults) {
     // Time ran out before even depth 1 finished (shouldn't normally happen) — fall back to the raw move order.
-    return moves[0];
+    return fallbackMoves[0];
   }
 
   let pick = bestDepthResults[0];
@@ -248,11 +255,40 @@ function getBestMove(fen, timeBudgetMs, addNoise) {
   return pick.m;
 }
 
+// Position analysis for the "review this game" UI: an evaluation (always
+// from White's perspective, in centipawns) plus the engine's top suggestion
+// for whoever is to move. Deliberately ignores the opening book — a review
+// tool should show a real number, not a book move with no evaluation.
+function analyzePosition(fen, timeBudgetMs) {
+  const chess = new Chess(fen);
+  if (chess.isCheckmate()) {
+    // The side to move has been mated — score is extreme in the mating side's favor.
+    return { score: chess.turn() === "w" ? -100000 : 100000, mate: true, move: null };
+  }
+  if (chess.isDraw() || chess.isStalemate()) {
+    return { score: 0, mate: false, move: null };
+  }
+
+  const { bestDepthResults } = rootSearch(chess, timeBudgetMs);
+  if (!bestDepthResults || !bestDepthResults.length) return { score: 0, mate: false, move: null };
+  const top = bestDepthResults[0];
+  return {
+    score: top.ev,
+    mate: Math.abs(top.ev) > 50000,
+    move: { from: top.m.from, to: top.m.to, promotion: top.m.promotion || null, san: top.m.san },
+  };
+}
+
 self.onmessage = (e) => {
-  const { fen, timeBudget, addNoise, requestId } = e.data;
+  const { type, fen, timeBudget, addNoise, requestId } = e.data;
   try {
-    const move = getBestMove(fen, timeBudget, addNoise);
-    self.postMessage({ requestId, ok: true, move: { from: move.from, to: move.to, promotion: move.promotion || null, san: move.san } });
+    if (type === "analyze") {
+      const analysis = analyzePosition(fen, timeBudget);
+      self.postMessage({ requestId, ok: true, analysis });
+    } else {
+      const move = getBestMove(fen, timeBudget, addNoise);
+      self.postMessage({ requestId, ok: true, move: { from: move.from, to: move.to, promotion: move.promotion || null, san: move.san } });
+    }
   } catch (err) {
     self.postMessage({ requestId, ok: false, error: String(err) });
   }

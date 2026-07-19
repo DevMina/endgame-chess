@@ -434,6 +434,14 @@ async function doJoin(raw, { onFail } = {}) {
     if (msg.type === "game-config" && !tableOpened) {
       tableOpened = true;
       startGame({ mode: "online", color: "b", online, clock: msg.clock });
+    } else if (msg.type === "sync" && !tableOpened) {
+      // The host never sends "game-config" a second time — it's a one-time
+      // handshake from the original lobby join. If this guest left and is
+      // rejoining via the invite link fresh, the host is already mid-game
+      // and answers with "sync" instead. Resume from that instead of
+      // sitting on "Connected. Waiting for the table to open…" forever.
+      tableOpened = true;
+      startGame({ mode: "online", color: "b", online, resumeHistory: msg.history, resumeClock: msg.clock });
     }
   });
   try {
@@ -675,7 +683,15 @@ function wireOnlineMessages(online) {
     if (wasReconnecting) {
       stopReconnectUI();
       toast("Reconnected");
-      online.send({ type: "sync", history: state.chess.history() });
+      online.send({
+        type: "sync",
+        history: state.chess.history(),
+        // A same-tab reconnect doesn't need this (wireOnlineMessages' own
+        // "sync" handler below only reconciles history) — but a guest who
+        // left and tapped the link fresh is starting from doJoin() with no
+        // game state at all, and needs the clock to resume properly too.
+        clock: state.clock ? { base: state.clock.base, remaining: { ...state.clock.remaining } } : null,
+      });
       renderAll();
     }
   });

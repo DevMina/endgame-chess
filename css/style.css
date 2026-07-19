@@ -31,7 +31,13 @@
   --radius: 3px;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  /* kill the browser's default translucent tap-highlight (shows as a blue
+     rectangle on tap on Android Chrome / touch-capable desktops) so only our
+     own :focus-visible / :active styles are ever visible */
+  -webkit-tap-highlight-color: transparent;
+}
 
 html, body {
   margin: 0;
@@ -40,6 +46,7 @@ html, body {
   color: var(--ivory);
   font-family: var(--font-body);
   min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
@@ -52,6 +59,7 @@ h1, h2, h3 { font-family: var(--font-display); margin: 0; font-weight: 600; }
 button {
   font-family: inherit;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 a { color: var(--brass-bright); }
@@ -419,8 +427,8 @@ a { color: var(--brass-bright); }
 
 .board {
   display: grid;
-  grid-template-columns: repeat(8, min(11.2vw, 66px));
-  grid-template-rows: repeat(8, min(11.2vw, 66px));
+  grid-template-columns: repeat(8, min(11.2vw, 50px));
+  grid-template-rows: repeat(8, min(11.2vw, 50px));
   border: 10px solid var(--panel-raised);
   box-shadow: 0 25px 50px -20px rgba(0,0,0,0.7);
   border-radius: 2px;
@@ -433,6 +441,7 @@ a { color: var(--brass-bright); }
   justify-content: center;
   font-size: min(7.5vw, 44px);
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .sq.light { background: var(--board-light); }
 .sq.dark { background: var(--board-dark); }

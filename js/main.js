@@ -1076,6 +1076,10 @@ $("chat-form").addEventListener("submit", (e) => {
   const input = $("chat-input");
   const text = input.value.trim();
   if (!text || !state.online) return;
+  if (!state.onlineConnected) {
+    toast("Can't reach your opponent right now \u2014 message not sent");
+    return;
+  }
   appendChat("You", text);
   state.online.send({ type: "chat", text });
   input.value = "";

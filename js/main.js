@@ -730,7 +730,12 @@ let clockTimerId = null;
 let clockLastTick = null;
 
 function clockShouldRun() {
-  return !!(state.clock && state.mode && !state.gameOver && state.viewingPly === null);
+  if (!(state.clock && state.mode && !state.gameOver && state.viewingPly === null)) return false;
+  // Don't let a dropped connection burn either player's clock — tickClock()
+  // already re-anchors clockLastTick every tick this returns false, so no
+  // gap gets charged once the connection comes back either.
+  if (state.mode === "online" && !state.onlineConnected) return false;
+  return true;
 }
 
 function startClockTimer() {
@@ -959,6 +964,10 @@ function showGameOver({ eyebrow, title, detail }) {
 }
 
 $("gameover-rematch").addEventListener("click", () => {
+  if (state.mode === "online" && !state.onlineConnected) {
+    toast("Can't reach your opponent right now \u2014 try again once reconnected");
+    return;
+  }
   hide($("overlay-gameover"));
   const clockBase = state.clock ? state.clock.base : null;
   if (state.mode === "single") {
@@ -1035,6 +1044,10 @@ $("btn-newgame").addEventListener("click", () => {
 $("btn-resign").addEventListener("click", () => {
   if (state.gameOver) return;
   if (state.mode === "online") {
+    if (!state.onlineConnected) {
+      toast("Can't reach your opponent right now \u2014 try again once reconnected");
+      return;
+    }
     state.online.send({ type: "resign" });
     showGameOver({ eyebrow: "Resignation", title: `${state.localColor === "w" ? "Black" : "White"} wins`, detail: "You resigned." });
   } else if (state.mode === "single") {

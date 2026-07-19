@@ -51,6 +51,73 @@ function toast(msg, ms = 2600) {
 }
 
 /* ---------------------------------------------------------
+   Saved-game persistence (single/local only — an online table is
+   inherently ephemeral, since a fresh page load gets a fresh peer id)
+--------------------------------------------------------- */
+const SAVE_KEY = "endgame-save-v1";
+
+function saveGame() {
+  if (state.mode !== "single" && state.mode !== "local") return;
+  if (state.gameOver) return;
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      mode: state.mode,
+      color: state.localColor,
+      difficulty: state.difficulty,
+      history: state.chess.history(),
+    }));
+  } catch (_) {
+    // Storage unavailable (private browsing, quota, etc.) — resuming just won't be offered next time.
+  }
+}
+
+function clearSavedGame() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (_) { /* nothing to do */ }
+}
+
+function loadSavedGame() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || (data.mode !== "single" && data.mode !== "local")) return null;
+    if (!Array.isArray(data.history) || data.history.length === 0) return null; // nothing worth resuming
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+function describeSavedGame(data) {
+  const moveNo = Math.ceil(data.history.length / 2);
+  if (data.mode === "single") {
+    const labels = { 1: "Easy", 2: "Medium", 3: "Hard" };
+    return `Single Player \u2014 ${labels[data.difficulty]} \u00b7 you're ${data.color === "w" ? "White" : "Black"} \u00b7 move ${moveNo}`;
+  }
+  return `Two Player \u2014 Same Screen \u00b7 move ${moveNo}`;
+}
+
+function refreshResumeBanner() {
+  const data = loadSavedGame();
+  if (data) {
+    $("resume-text").textContent = describeSavedGame(data);
+    show($("resume-banner"));
+  } else {
+    hide($("resume-banner"));
+  }
+}
+
+$("btn-resume").addEventListener("click", () => {
+  const data = loadSavedGame();
+  if (!data) { hide($("resume-banner")); return; }
+  startGame({ mode: data.mode, color: data.color, difficulty: data.difficulty, resumeHistory: data.history });
+});
+$("btn-resume-discard").addEventListener("click", () => {
+  clearSavedGame();
+  hide($("resume-banner"));
+});
+
+/* ---------------------------------------------------------
    Application state
 --------------------------------------------------------- */
 const state = {
@@ -144,6 +211,7 @@ $("mode-online").addEventListener("click", () => {
 document.querySelectorAll('[data-back="home"]').forEach((btn) =>
   btn.addEventListener("click", () => {
     if (state.online) { state.online.close(); state.online = null; }
+    refreshResumeBanner();
     goTo("home");
   })
 );
@@ -272,13 +340,18 @@ $("lobby-copy-btn").addEventListener("click", async () => {
   }
 })();
 
+refreshResumeBanner();
+
 /* ---------------------------------------------------------
    Starting / resetting a game
 --------------------------------------------------------- */
-function startGame({ mode, color = "w", difficulty = 2, online = null }) {
+function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHistory = null }) {
   cancelPendingAiMove();
   state.mode = mode;
   state.chess = createGame();
+  if (resumeHistory) {
+    for (const san of resumeHistory) state.chess.move(san);
+  }
   state.localColor = color;
   state.difficulty = difficulty;
   state.aiThinking = false;
@@ -288,7 +361,13 @@ function startGame({ mode, color = "w", difficulty = 2, online = null }) {
   state.onlineConnected = mode === "online";
 
   boardUI.setOrientation(mode === "online" ? color : "w");
-  boardUI.setLastMove(null, null);
+  if (resumeHistory && resumeHistory.length) {
+    const verbose = state.chess.history({ verbose: true });
+    const last = verbose[verbose.length - 1];
+    boardUI.setLastMove(last.from, last.to);
+  } else {
+    boardUI.setLastMove(null, null);
+  }
   boardUI.clearSelection();
 
   const modeTag = $("game-mode-tag");
@@ -332,6 +411,7 @@ function startGame({ mode, color = "w", difficulty = 2, online = null }) {
 
   renderAll();
   goTo("game");
+  saveGame(); // persist the fresh or resumed position as the new baseline
 
   if (mode === "single" && state.localColor !== state.chess.turn()) {
     requestAiMove();
@@ -540,6 +620,7 @@ function attemptLocalMove({ from, to, promotion }) {
   }
 
   if (checkGameOver()) return;
+  saveGame();
 
   if (state.mode === "single" && state.chess.turn() !== state.localColor) {
     requestAiMove();
@@ -551,7 +632,7 @@ function requestAiMove() {
   $("turn-banner").textContent = "The engine is thinking\u2026";
   const worker = getAiWorker();
   const requestId = Math.random().toString(36).slice(2);
-  const depthByDifficulty = { 1: 1, 2: 2, 3: 3 };
+  const timeBudgetByDifficulty = { 1: 250, 2: 700, 3: 1800 }; // ms, iterative deepening runs until this budget is spent
   const noiseByDifficulty = { 1: true, 2: true, 3: false };
 
   const handler = (e) => {
@@ -563,12 +644,12 @@ function requestAiMove() {
     state.viewingPly = null;
     if (mv) boardUI.setLastMove(mv.from, mv.to);
     renderAll();
-    checkGameOver();
+    if (!checkGameOver()) saveGame();
   };
   worker.addEventListener("message", handler);
   worker.postMessage({
     fen: state.chess.fen(),
-    depth: depthByDifficulty[state.difficulty],
+    timeBudget: timeBudgetByDifficulty[state.difficulty],
     addNoise: noiseByDifficulty[state.difficulty],
     requestId,
   });
@@ -599,6 +680,7 @@ function showGameOver({ eyebrow, title, detail }) {
   state.gameOver = true;
   stopReconnectUI();
   hideDrawOfferBanner();
+  clearSavedGame();
   $("gameover-eyebrow").textContent = eyebrow;
   $("gameover-title").textContent = title;
   $("gameover-detail").textContent = detail;
@@ -629,6 +711,7 @@ $("gameover-home").addEventListener("click", () => {
   hide($("overlay-gameover"));
   stopReconnectUI();
   if (state.online) { state.online.close(); state.online = null; }
+  refreshResumeBanner();
   goTo("home");
 });
 
@@ -647,6 +730,7 @@ $("btn-undo").addEventListener("click", () => {
   boardUI.setLastMove(null, null);
   boardUI.clearSelection();
   renderAll();
+  saveGame();
 });
 $("btn-flip").addEventListener("click", () => boardUI.flip());
 $("btn-copy-pgn").addEventListener("click", async () => {
@@ -688,6 +772,7 @@ $("game-quit").addEventListener("click", () => {
   stopReconnectUI();
   if (state.online) { state.online.close(); state.online = null; }
   hide($("overlay-gameover"));
+  refreshResumeBanner();
   goTo("home");
 });
 

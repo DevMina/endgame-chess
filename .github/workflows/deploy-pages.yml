@@ -1,0 +1,51 @@
+name: Deploy to GitHub Pages
+
+# Runs on every push to main, and can also be triggered manually from the
+# Actions tab. Each run stamps sw.js with a fresh cache version (the short
+# commit SHA) before publishing, so visitors always pick up the new files
+# instead of a stale service-worker cache.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deploy at a time; if a new push lands mid-deploy, let it finish
+# rather than mixing two builds together.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp service worker with this commit's version
+        run: |
+          VERSION="${GITHUB_SHA::7}-$(date -u +%Y%m%d%H%M%S)"
+          echo "Cache version: $VERSION"
+          sed -i "s/const CACHE_VERSION = \".*\";/const CACHE_VERSION = \"${VERSION}\";/" sw.js
+          grep CACHE_VERSION sw.js
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -375,6 +375,20 @@ $("lobby-host-btn").addEventListener("click", async () => {
       startGame({ mode: "online", color: "w", online, clock });
     });
     online.on("error", () => toast("Connection trouble \u2014 try hosting again."));
+    // The broker connection commonly drops while the host backgrounds the
+    // tab/PWA to go share the invite link (mobile OS throttling). Without
+    // this, the table silently stops being reachable and a guest tapping
+    // the link later just sees "Couldn't reach that table" with no
+    // indication anything was ever wrong on the host's end.
+    online.on("broker-disconnected", () => {
+      if (tableOpened) return; // mid-game drops are handled by the in-game reconnect flow instead
+      $("lobby-host-status").textContent = "Reconnecting to the network\u2026";
+      online.reconnect().then(() => {
+        $("lobby-host-status").textContent = "Table open. Waiting for your opponent to join\u2026";
+      }).catch(() => {
+        $("lobby-host-status").textContent = "Lost connection. Check your network and try hosting again.";
+      });
+    });
   } catch (err) {
     $("lobby-host-status").textContent = "Couldn't open a table. Check your connection and try again.";
   }
@@ -383,6 +397,10 @@ $("lobby-host-btn").addEventListener("click", async () => {
 $("lobby-join-btn").addEventListener("click", () => {
   hide($("lobby-choice"));
   show($("lobby-joining"));
+  // checkIncomingInvite() hides this box for the auto-join case and nothing
+  // else restores it — without this, manually choosing "I have a link" after
+  // an auto-join attempt shows a blank panel (no input, no status text).
+  show($("lobby-join-input-box"));
 });
 
 $("lobby-join-submit").addEventListener("click", () => doJoin($("lobby-join-input").value.trim()));
@@ -390,7 +408,7 @@ $("lobby-join-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") doJoin($("lobby-join-input").value.trim());
 });
 
-async function doJoin(raw) {
+async function doJoin(raw, { onFail } = {}) {
   if (!raw) return;
   let roomId = raw;
   try {
@@ -403,7 +421,10 @@ async function doJoin(raw) {
   $("lobby-join-status").textContent = "Connecting\u2026";
   const online = new OnlineGame();
   state.online = online;
-  online.on("error", () => { $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again."; });
+  online.on("error", () => {
+    $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again.";
+    onFail?.();
+  });
   let tableOpened = false;
   online.on("connected", () => {
     // Wait for the host's table settings (clock, etc.) before actually starting.
@@ -419,6 +440,7 @@ async function doJoin(raw) {
     await online.join(roomId);
   } catch (err) {
     $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again.";
+    onFail?.();
   }
 }
 
@@ -438,12 +460,25 @@ $("lobby-copy-btn").addEventListener("click", async () => {
 (function checkIncomingInvite() {
   const room = roomIdFromUrl();
   if (room) {
+    // Drop ?room= from the URL immediately. Left in place, it would keep
+    // re-triggering this same auto-join on every future visit to this URL —
+    // including a "PWA" shortcut, since Android commonly saves whatever URL
+    // was in the bar at add-to-home-screen time, room param and all.
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("room");
+    window.history.replaceState({}, "", cleanUrl.toString());
+
     goTo("onlineLobby");
     hide($("lobby-choice"));
     show($("lobby-joining"));
     hide($("lobby-join-input-box"));
     $("lobby-join-status").textContent = `Joining table ${room}\u2026`;
-    doJoin(room);
+    doJoin(room, {
+      // If the auto-join fails, don't strand the user on a dead-end screen
+      // with no visible Host/Join buttons — bring the choice back so they
+      // can still open their own table.
+      onFail: () => show($("lobby-choice")),
+    });
   }
 })();
 

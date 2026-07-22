@@ -321,6 +321,17 @@ a { color: var(--brass-bright); }
   color: var(--muted);
 }
 
+.spectator-count {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--line, rgba(255,255,255,0.15));
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 /* Thread — the signature online-connection element */
 .thread {
   display: flex;
@@ -426,12 +437,26 @@ a { color: var(--brass-bright); }
 .board-wrap.viewing .board { opacity: 0.7; filter: saturate(0.65); transition: opacity 0.15s ease, filter 0.15s ease; }
 
 .board {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(8, min(11.2vw, 50px));
   grid-template-rows: repeat(8, min(11.2vw, 50px));
   border: 10px solid var(--panel-raised);
   box-shadow: 0 25px 50px -20px rgba(0,0,0,0.7);
   border-radius: 2px;
+}
+
+.hint-arrow-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.hint-arrow-shape {
+  fill: var(--thread);
+  stroke: var(--thread);
+  opacity: 0.85;
 }
 
 .sq {
@@ -442,6 +467,7 @@ a { color: var(--brass-bright); }
   font-size: min(7.5vw, 44px);
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  touch-action: none; /* a finger dragging a piece shouldn't also scroll the page */
 }
 .sq.light { background: var(--board-light); }
 .sq.dark { background: var(--board-dark); }
@@ -468,6 +494,19 @@ a { color: var(--brass-bright); }
 .piece.black { color: #241c12; -webkit-text-stroke: 0.6px #0a0704; }
 .piece:active { cursor: grabbing; }
 .piece.dragging { opacity: 0.35; }
+
+.drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 1000;
+  filter: drop-shadow(0 8px 12px rgba(0,0,0,0.5));
+  will-change: transform;
+}
 
 .sq.selected { box-shadow: inset 0 0 0 3px var(--brass-bright); }
 .sq.last-move { box-shadow: inset 0 0 0 3px rgba(122,148,113,0.55); }
@@ -639,6 +678,10 @@ a { color: var(--brass-bright); }
   border-radius: var(--radius);
   padding: 0.5rem 0.9rem;
 }
+
+#puzzle-banner.puzzle-wrong { color: var(--check-red); border-color: var(--check-red); }
+#puzzle-banner.puzzle-correct { color: var(--moss); border-color: var(--moss); }
+#puzzle-banner.puzzle-solved { color: var(--brass-bright); border-color: var(--brass); }
 
 .ledger-chat { display: flex; flex-direction: column; gap: 0.6rem; }
 .chat-log {

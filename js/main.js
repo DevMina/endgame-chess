@@ -1,6 +1,8 @@
 import { createGame, PIECE_GLYPH, gameStatusText } from "./engine.js";
 import { BoardUI } from "./board.js";
-import { OnlineGame, roomIdFromUrl, buildInviteLink } from "./network.js";
+import { OnlineGame, roomIdFromUrl, buildInviteLink, isSpectateUrl } from "./network.js";
+import { playMove, playCapture, playCheck, playGameEnd, playWrong, isSoundOn, setSoundOn } from "./sound.js";
+import { PUZZLES } from "./puzzles.js";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -130,6 +132,8 @@ const state = {
   aiThinking: false,
   online: null, // OnlineGame instance
   onlineConnected: false,
+  isSpectator: false, // true for a read-only watcher connected via a "watch" link
+  puzzle: null, // { index, ply, awaitingReply } while state.mode === "puzzle"
   gameOver: false, // true once checkmate/stalemate/draw/resign has ended the current game
   viewingPly: null, // null = showing the live position; otherwise an index into history() being browsed read-only
   analysisOn: false,
@@ -227,6 +231,7 @@ function updateAnalysis() {
   const chess = getDisplayGame();
   const seq = ++analysisSeq;
   $("eval-text").textContent = "Analyzing\u2026";
+  boardUI.clearHintArrow(); // avoid a stale arrow lingering while the new position is being analyzed
   const worker = getAnalysisWorker();
   const requestId = `a${seq}`;
   const handler = (e) => {
@@ -240,6 +245,7 @@ function updateAnalysis() {
     $("eval-bar-fill").style.width = `${whiteShare}%`;
     const evalLabel = formatEval(score, mate);
     $("eval-text").textContent = move ? `${evalLabel} \u00b7 best is ${move.san}` : evalLabel;
+    if (move) boardUI.showHintArrow(move.from, move.to); else boardUI.clearHintArrow();
   };
   worker.addEventListener("message", handler);
   worker.postMessage({ type: "analyze", fen: chess.fen(), timeBudget: ANALYSIS_TIME_BUDGET, requestId });
@@ -253,6 +259,7 @@ $("btn-analyze").addEventListener("click", () => {
     updateAnalysis();
   } else {
     hide($("analysis-panel"));
+    boardUI.clearHintArrow();
     analysisSeq++; // invalidate any in-flight request
   }
 });
@@ -268,6 +275,7 @@ $("mode-online").addEventListener("click", () => {
   goTo("onlineLobby");
   resetLobby();
 });
+$("mode-puzzle").addEventListener("click", () => startPuzzle(firstUnsolvedPuzzleIndex()));
 document.querySelectorAll('[data-back="home"]').forEach((btn) =>
   btn.addEventListener("click", () => {
     if (state.online) { state.online.close(); state.online = null; }
@@ -363,8 +371,10 @@ $("lobby-host-btn").addEventListener("click", async () => {
   try {
     const roomId = await online.host();
     const link = buildInviteLink(roomId);
+    const watchLink = buildInviteLink(roomId, { watch: true });
     $("lobby-host-status").textContent = "Table open. Waiting for your opponent to join\u2026";
     $("lobby-link-input").value = link;
+    $("lobby-watch-link-input").value = watchLink;
     show($("lobby-link-box"));
     let tableOpened = false;
     online.on("connected", () => {
@@ -373,16 +383,65 @@ $("lobby-host-btn").addEventListener("click", async () => {
       const clock = CLOCK_PRESETS[lobbyClockKey];
       online.send({ type: "game-config", clock });
       startGame({ mode: "online", color: "w", online, clock });
+      // Catch up any spectator who connected before the actual opponent did
+      // — sendSpectatorInit no-ops until state.mode is "online", so this is
+      // the first point after hosting where their initial sync can go out.
+      online.spectatorConns.forEach(sendSpectatorInit);
     });
     online.on("error", () => toast("Connection trouble \u2014 try hosting again."));
+    online.on("spectator-joined", (conn) => sendSpectatorInit(conn));
+    online.on("spectator-count", (count) => updateSpectatorCount(count));
+    // The broker connection commonly drops while the host backgrounds the
+    // tab/PWA to go share the invite link (mobile OS throttling). Without
+    // this, the table silently stops being reachable and a guest tapping
+    // the link later just sees "Couldn't reach that table" with no
+    // indication anything was ever wrong on the host's end.
+    online.on("broker-disconnected", () => {
+      if (tableOpened) return; // mid-game drops are handled by the in-game reconnect flow instead
+      $("lobby-host-status").textContent = "Reconnecting to the network\u2026";
+      online.reconnect().then(() => {
+        $("lobby-host-status").textContent = "Table open. Waiting for your opponent to join\u2026";
+      }).catch(() => {
+        $("lobby-host-status").textContent = "Lost connection. Check your network and try hosting again.";
+      });
+    });
   } catch (err) {
     $("lobby-host-status").textContent = "Couldn't open a table. Check your connection and try again.";
   }
 });
 
+// Sends a spectator the current position/clock so they can render an
+// in-progress game. No-ops until the actual game has started (state.mode
+// isn't "online" yet) — the spectator-joined event that would otherwise
+// trigger this fires as soon as they connect, which can be before the real
+// opponent has joined at all.
+function sendSpectatorInit(conn) {
+  if (!conn || !conn.open || state.mode !== "online") return;
+  conn.send({
+    type: "spectator-init",
+    history: state.chess.history(),
+    clock: state.clock ? { base: state.clock.base, remaining: { ...state.clock.remaining } } : null,
+  });
+}
+
+function updateSpectatorCount(count) {
+  const el = $("spectator-count");
+  if (!el) return;
+  if (count > 0) {
+    el.textContent = count === 1 ? "1 watching" : `${count} watching`;
+    show(el);
+  } else {
+    hide(el);
+  }
+}
+
 $("lobby-join-btn").addEventListener("click", () => {
   hide($("lobby-choice"));
   show($("lobby-joining"));
+  // checkIncomingInvite() hides this box for the auto-join case and nothing
+  // else restores it — without this, manually choosing "I have a link" after
+  // an auto-join attempt shows a blank panel (no input, no status text).
+  show($("lobby-join-input-box"));
 });
 
 $("lobby-join-submit").addEventListener("click", () => doJoin($("lobby-join-input").value.trim()));
@@ -390,7 +449,7 @@ $("lobby-join-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") doJoin($("lobby-join-input").value.trim());
 });
 
-async function doJoin(raw) {
+async function doJoin(raw, { onFail } = {}) {
   if (!raw) return;
   let roomId = raw;
   try {
@@ -403,7 +462,10 @@ async function doJoin(raw) {
   $("lobby-join-status").textContent = "Connecting\u2026";
   const online = new OnlineGame();
   state.online = online;
-  online.on("error", () => { $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again."; });
+  online.on("error", () => {
+    $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again.";
+    onFail?.();
+  });
   let tableOpened = false;
   online.on("connected", () => {
     // Wait for the host's table settings (clock, etc.) before actually starting.
@@ -413,12 +475,56 @@ async function doJoin(raw) {
     if (msg.type === "game-config" && !tableOpened) {
       tableOpened = true;
       startGame({ mode: "online", color: "b", online, clock: msg.clock });
+    } else if (msg.type === "sync" && !tableOpened) {
+      // The host never sends "game-config" a second time — it's a one-time
+      // handshake from the original lobby join. If this guest left and is
+      // rejoining via the invite link fresh, the host is already mid-game
+      // and answers with "sync" instead. Resume from that instead of
+      // sitting on "Connected. Waiting for the table to open…" forever.
+      tableOpened = true;
+      startGame({ mode: "online", color: "b", online, resumeHistory: msg.history, resumeClock: msg.clock });
     }
   });
   try {
     await online.join(roomId);
   } catch (err) {
     $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again.";
+    onFail?.();
+  }
+}
+
+async function doWatch(raw, { onFail } = {}) {
+  if (!raw) return;
+  let roomId = raw;
+  try {
+    if (raw.includes("://")) {
+      const u = new URL(raw);
+      roomId = u.searchParams.get("room") || raw;
+    }
+  } catch (_) { /* not a URL, treat as raw room id */ }
+
+  $("lobby-join-status").textContent = "Connecting\u2026";
+  const online = new OnlineGame();
+  state.online = online;
+  online.on("error", () => {
+    $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again.";
+    onFail?.();
+  });
+  let tableOpened = false;
+  online.on("connected", () => {
+    $("lobby-join-status").textContent = "Connected. Waiting for the game to start\u2026";
+  });
+  online.on("message", (msg) => {
+    if (msg.type === "spectator-init" && !tableOpened) {
+      tableOpened = true;
+      startGame({ mode: "online", online, isSpectator: true, resumeHistory: msg.history, resumeClock: msg.clock });
+    }
+  });
+  try {
+    await online.watch(roomId);
+  } catch (err) {
+    $("lobby-join-status").textContent = "Couldn't reach that table. Check the link and try again.";
+    onFail?.();
   }
 }
 
@@ -434,16 +540,49 @@ $("lobby-copy-btn").addEventListener("click", async () => {
   }
 });
 
+$("lobby-watch-copy-btn").addEventListener("click", async () => {
+  const input = $("lobby-watch-link-input");
+  input.select();
+  try {
+    await navigator.clipboard.writeText(input.value);
+    toast("Watch link copied");
+  } catch (_) {
+    document.execCommand("copy");
+    toast("Watch link copied");
+  }
+});
+
 // Auto-detect an invite link on load
 (function checkIncomingInvite() {
   const room = roomIdFromUrl();
   if (room) {
+    const spectating = isSpectateUrl();
+    // Drop ?room= (and ?watch=) from the URL immediately. Left in place, it
+    // would keep re-triggering this same auto-join on every future visit to
+    // this URL — including a "PWA" shortcut, since Android commonly saves
+    // whatever URL was in the bar at add-to-home-screen time, room param
+    // and all.
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("room");
+    cleanUrl.searchParams.delete("watch");
+    window.history.replaceState({}, "", cleanUrl.toString());
+
     goTo("onlineLobby");
     hide($("lobby-choice"));
     show($("lobby-joining"));
     hide($("lobby-join-input-box"));
-    $("lobby-join-status").textContent = `Joining table ${room}\u2026`;
-    doJoin(room);
+    $("lobby-join-status").textContent = spectating ? `Connecting to table ${room}\u2026` : `Joining table ${room}\u2026`;
+    const onFail = () => show($("lobby-choice"));
+    if (spectating) {
+      doWatch(room, { onFail });
+    } else {
+      doJoin(room, {
+        // If the auto-join fails, don't strand the user on a dead-end screen
+        // with no visible Host/Join buttons — bring the choice back so they
+        // can still open their own table.
+        onFail,
+      });
+    }
   }
 })();
 
@@ -452,7 +591,7 @@ refreshResumeBanner();
 /* ---------------------------------------------------------
    Starting / resetting a game
 --------------------------------------------------------- */
-function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHistory = null, clock = null, resumeClock = null }) {
+function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHistory = null, clock = null, resumeClock = null, isSpectator = false }) {
   cancelPendingAiMove();
   state.mode = mode;
   state.chess = createGame();
@@ -466,6 +605,7 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
   state.viewingPly = null;
   state.online = online;
   state.onlineConnected = mode === "online";
+  state.isSpectator = isSpectator;
 
   stopClockTimer();
   if (resumeClock) {
@@ -508,7 +648,15 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
   state.analysisOn = false;
   analyzeBtn.classList.remove("selected");
   hide($("analysis-panel"));
+  boardUI.clearHintArrow();
   analysisSeq++; // invalidate any analysis still in flight from the previous game
+
+  state.puzzle = null;
+  hide($("puzzle-banner"));
+  hide($("btn-puzzle-hint"));
+  hide($("btn-puzzle-retry"));
+  hide($("btn-puzzle-next"));
+  hide($("spectator-count"));
 
   if (mode === "single") {
     const labels = { 1: "Easy", 2: "Medium", 3: "Hard" };
@@ -519,6 +667,7 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
     show(newGameBtn);
     hide(drawOfferBtn);
     show(analyzeBtn);
+    show($("btn-resign"));
   } else if (mode === "local") {
     modeTag.textContent = "Two Player \u2014 Same Screen";
     hide(chatSection);
@@ -527,16 +676,27 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
     show(newGameBtn);
     hide(drawOfferBtn);
     show(analyzeBtn);
+    show($("btn-resign"));
   } else if (mode === "online") {
-    modeTag.textContent = `Online \u2014 you're ${color === "w" ? "White" : "Black"}`;
-    show(chatSection);
-    threadEl.hidden = false;
-    threadEl.classList.remove("waiting");
-    threadEl.classList.add("connected");
     hide(undoBtn); // undo would desync the peer
     hide(newGameBtn); // use "Play again" from the game-over overlay instead
-    show(drawOfferBtn);
-    hide(analyzeBtn); // kept out of live online play so it can't work as a real-time assist against a human opponent
+    if (isSpectator) {
+      modeTag.textContent = "Spectating";
+      hide(chatSection);
+      threadEl.hidden = true;
+      hide(drawOfferBtn);
+      hide($("btn-resign"));
+      show(analyzeBtn); // no fairness concern for a non-participant — this is a nice vantage point for it
+    } else {
+      modeTag.textContent = `Online \u2014 you're ${color === "w" ? "White" : "Black"}`;
+      show(chatSection);
+      threadEl.hidden = false;
+      threadEl.classList.remove("waiting");
+      threadEl.classList.add("connected");
+      show(drawOfferBtn);
+      show($("btn-resign"));
+      hide(analyzeBtn); // kept out of live online play so it can't work as a real-time assist against a human opponent
+    }
     $("chat-log").innerHTML = "";
     wireOnlineMessages(online);
   }
@@ -559,12 +719,31 @@ function startGame({ mode, color = "w", difficulty = 2, online = null, resumeHis
 
 function wireOnlineMessages(online) {
   online.on("message", (msg) => {
+    // Whatever just arrived from the actual opponent, forward the
+    // game-relevant subset on to any spectators too — see
+    // SPECTATOR_MIRROR_TYPES in network.js for exactly which types.
+    // (Only meaningful when this side is the host: spectators only ever
+    // connect to the host, never to the guest.)
+    if (online.role === "host") online.broadcastToSpectators(msg);
+
     if (msg.type === "move") {
       if (state.gameOver) return; // ignore a move that arrives after this game already ended
-      const mv = state.chess.move({ from: msg.from, to: msg.to, promotion: msg.promotion || undefined });
+      // chess.js throws on an illegal move (rather than returning null), and
+      // msg.from/msg.to/msg.promotion come straight from the peer's browser
+      // over an otherwise-unauthenticated data channel — a modified or
+      // buggy client on the other end can send anything. Treat a throw the
+      // same as an illegal move instead of letting it escape uncaught and
+      // silently desync this side's game.
+      let mv = null;
+      try {
+        mv = state.chess.move({ from: msg.from, to: msg.to, promotion: msg.promotion || undefined });
+      } catch (_) {
+        mv = null;
+      }
       if (mv) {
         state.viewingPly = null;
         boardUI.setLastMove(mv.from, mv.to);
+        playSoundForMove(mv, state.chess);
         if (state.clock && msg.clockRemaining) {
           state.clock.remaining.w = msg.clockRemaining.w;
           state.clock.remaining.b = msg.clockRemaining.b;
@@ -572,10 +751,18 @@ function wireOnlineMessages(online) {
         }
         renderAll();
         checkGameOver();
+      } else {
+        // Opponent sent a move that isn't legal in our copy of the position
+        // (corrupt message, protocol mismatch, or a hand-rolled client).
+        // Nothing to apply it to safely, so just let them know and drop it
+        // rather than crash or quietly drift out of sync.
+        toast("Received an invalid move from your opponent \u2014 ignored");
       }
     } else if (msg.type === "resign") {
       if (state.gameOver) return;
-      showGameOver({ eyebrow: "Resignation", title: `${state.localColor === "w" ? "White" : "Black"} wins`, detail: "Your opponent resigned." });
+      const resignedColor = msg.color === "b" ? "Black" : "White"; // default to White only for a pre-fix peer that omitted color
+      const winner = resignedColor === "White" ? "Black" : "White";
+      showGameOver({ eyebrow: "Resignation", title: `${winner} wins`, detail: `${resignedColor} resigned.` });
     } else if (msg.type === "chat") {
       appendChat("Opponent", msg.text);
     } else if (msg.type === "draw-offer") {
@@ -597,7 +784,13 @@ function wireOnlineMessages(online) {
       const prefixMatches = localHist.every((san, i) => san === incoming[i]);
       if (incoming.length > localHist.length && prefixMatches) {
         const fresh = createGame();
-        for (const san of incoming) fresh.move(san);
+        let replayOk = true;
+        try {
+          for (const san of incoming) fresh.move(san);
+        } catch (_) {
+          replayOk = false; // opponent's reported history isn't actually a legal game — ignore it
+        }
+        if (!replayOk) return;
         state.chess = fresh;
         state.viewingPly = null;
         const verbose = state.chess.history({ verbose: true });
@@ -626,9 +819,35 @@ function wireOnlineMessages(online) {
       renderAll();
       hide($("overlay-gameover"));
       toast("Opponent started a rematch");
+    } else if (msg.type === "spectator-init") {
+      // The very first spectator-init is consumed by the one-shot listener
+      // in doWatch() to actually start the game. Any later one (the host's
+      // spectator-joined handler fires again for a brand-new connection
+      // after a reconnect) lands here instead, to catch this spectator back
+      // up on whatever happened while they were disconnected.
+      if (!state.isSpectator) return;
+      const localHist = state.chess.history();
+      const incoming = msg.history || [];
+      const alreadyCurrent = incoming.length === localHist.length && localHist.every((san, i) => san === incoming[i]);
+      if (alreadyCurrent) return;
+      const fresh = createGame();
+      let replayOk = true;
+      try {
+        for (const san of incoming) fresh.move(san);
+      } catch (_) {
+        replayOk = false;
+      }
+      if (!replayOk) return;
+      state.chess = fresh;
+      state.viewingPly = null;
+      const verbose = state.chess.history({ verbose: true });
+      const last = verbose[verbose.length - 1];
+      boardUI.setLastMove(last ? last.from : null, last ? last.to : null);
+      state.clock = msg.clock ? { base: msg.clock.base, remaining: { ...msg.clock.remaining } } : null;
+      renderAll();
+      checkGameOver();
+      toast("Caught up on the game");
     }
-  });
-  online.on("connected", () => {
     // Fires again here (beyond the initial lobby handshake) whenever a
     // dropped connection is re-established.
     if (state.mode !== "online") return;
@@ -640,7 +859,22 @@ function wireOnlineMessages(online) {
     if (wasReconnecting) {
       stopReconnectUI();
       toast("Reconnected");
-      online.send({ type: "sync", history: state.chess.history() });
+      if (online.role !== "spectator") {
+        online.send({
+          type: "sync",
+          history: state.chess.history(),
+          // A same-tab reconnect doesn't need this (wireOnlineMessages' own
+          // "sync" handler below only reconciles history) — but a guest who
+          // left and tapped the link fresh is starting from doJoin() with no
+          // game state at all, and needs the clock to resume properly too.
+          clock: state.clock ? { base: state.clock.base, remaining: { ...state.clock.remaining } } : null,
+        });
+      }
+      // A reconnecting spectator gets caught up differently: from the
+      // host's side, this new connection looks identical to a fresh
+      // "spectator-joined" (same metadata, brand-new PeerJS connection),
+      // which already triggers a fresh spectator-init with the current
+      // history — handled below wherever spectator-init is processed.
       renderAll();
     }
   });
@@ -650,7 +884,7 @@ function wireOnlineMessages(online) {
     threadEl.classList.remove("connected");
     threadEl.classList.add("waiting");
     if (state.gameOver) return;
-    if (online.role === "guest") {
+    if (online.role === "guest" || online.role === "spectator") {
       toast("Connection lost \u2014 reconnecting\u2026");
       startReconnectAttempts(online);
     } else {
@@ -679,7 +913,12 @@ let clockTimerId = null;
 let clockLastTick = null;
 
 function clockShouldRun() {
-  return !!(state.clock && state.mode && !state.gameOver && state.viewingPly === null);
+  if (!(state.clock && state.mode && !state.gameOver && state.viewingPly === null)) return false;
+  // Don't let a dropped connection burn either player's clock — tickClock()
+  // already re-anchors clockLastTick every tick this returns false, so no
+  // gap gets charged once the connection comes back either.
+  if (state.mode === "online" && !state.onlineConnected) return false;
+  return true;
 }
 
 function startClockTimer() {
@@ -758,7 +997,9 @@ function attemptReconnect(online) {
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       reconnectTimer = setTimeout(() => attemptReconnect(online), 2000);
     } else {
-      $("reconnect-text").textContent = "Couldn't reconnect. Your opponent may have left.";
+      $("reconnect-text").textContent = state.isSpectator
+        ? "Couldn't reconnect. The table may have closed."
+        : "Couldn't reconnect. Your opponent may have left.";
       show($("btn-reconnect-retry"));
     }
   });
@@ -790,19 +1031,21 @@ function hideDrawOfferBanner() {
 }
 
 $("btn-draw-offer").addEventListener("click", () => {
-  if (state.mode !== "online" || state.gameOver || !state.onlineConnected) return;
+  if (state.mode !== "online" || state.gameOver || !state.onlineConnected || state.isSpectator) return;
   state.online.send({ type: "draw-offer" });
   $("btn-draw-offer").disabled = true;
   toast("Draw offered \u2014 waiting for a response");
 });
 
 $("draw-accept-btn").addEventListener("click", () => {
+  if (state.isSpectator) return;
   hideDrawOfferBanner();
   if (state.online) state.online.send({ type: "draw-accept" });
   showGameOver({ eyebrow: "Draw", title: "Draw agreed", detail: "" });
 });
 
 $("draw-decline-btn").addEventListener("click", () => {
+  if (state.isSpectator) return;
   hideDrawOfferBanner();
   if (state.online) state.online.send({ type: "draw-decline" });
 });
@@ -811,7 +1054,9 @@ $("draw-decline-btn").addEventListener("click", () => {
    Move handling
 --------------------------------------------------------- */
 function canLocalPlayerMove() {
+  if (state.isSpectator) return false;
   if (state.viewingPly !== null) return false;
+  if (state.mode === "puzzle") return !!state.puzzle && !state.puzzle.awaitingReply;
   if (state.gameOver) return false;
   if (state.aiThinking) return false;
   if (state.mode === "single") return state.chess.turn() === state.localColor;
@@ -819,11 +1064,196 @@ function canLocalPlayerMove() {
   return true; // local pass-and-play: whoever's turn it is may move
 }
 
+// Picks move / capture / check for a just-applied move — but not when the
+// move ended the game, since showGameOver() plays its own end-of-game
+// sound and playing both would step on each other.
+function playSoundForMove(mv, chess) {
+  if (!mv) return;
+  if (gameStatusText(chess).over) return;
+  if (chess.isCheck && chess.isCheck()) playCheck();
+  else if (mv.captured) playCapture();
+  else playMove();
+}
+
+/* ---------------------------------------------------------
+   Puzzles
+--------------------------------------------------------- */
+const PUZZLE_PROGRESS_KEY = "endgame_puzzles_solved";
+let puzzleSessionId = 0; // bumped every startPuzzle() call, including a Retry of the same puzzle
+
+function loadSolvedPuzzleIds() {
+  try { return JSON.parse(localStorage.getItem(PUZZLE_PROGRESS_KEY) || "[]"); } catch (_) { return []; }
+}
+
+function markPuzzleSolved(id) {
+  const solved = loadSolvedPuzzleIds();
+  if (solved.includes(id)) return;
+  solved.push(id);
+  try { localStorage.setItem(PUZZLE_PROGRESS_KEY, JSON.stringify(solved)); } catch (_) { /* best-effort only */ }
+}
+
+function firstUnsolvedPuzzleIndex() {
+  const solved = loadSolvedPuzzleIds();
+  const idx = PUZZLES.findIndex((p) => !solved.includes(p.id));
+  return idx === -1 ? 0 : idx;
+}
+
+function startPuzzle(index) {
+  cancelPendingAiMove();
+  const puzzle = PUZZLES[index];
+  state.mode = "puzzle";
+  state.chess = createGame(puzzle.fen);
+  state.localColor = state.chess.turn();
+  state.aiThinking = false;
+  state.gameOver = false;
+  state.viewingPly = null;
+  state.online = null;
+  state.onlineConnected = false;
+  state.isSpectator = false;
+  state.clock = null;
+  state.puzzle = { index, ply: 0, awaitingReply: false };
+  puzzleSessionId++;
+
+  boardUI.clearSelection();
+  boardUI.clearHintArrow();
+  boardUI.setLastMove(null, null);
+  boardUI.setOrientation(state.chess.turn());
+
+  hide($("clocks-row"));
+  hide($("chat-section"));
+  $("thread-indicator").hidden = true;
+  hide($("spectator-count"));
+  hide($("btn-undo"));
+  hide($("btn-newgame"));
+  hide($("btn-draw-offer"));
+  hide($("btn-resign"));
+  hide($("btn-analyze"));
+
+  state.analysisOn = false;
+  $("btn-analyze").classList.remove("selected");
+  hide($("analysis-panel"));
+  analysisSeq++; // invalidate any analysis still in flight from whatever was on screen before
+
+  show($("btn-puzzle-hint"));
+  show($("btn-puzzle-retry"));
+  hide($("btn-puzzle-next"));
+  show($("puzzle-banner"));
+
+  $("game-mode-tag").textContent = `Puzzle ${index + 1} of ${PUZZLES.length}`;
+  showPuzzleFeedback("start");
+  renderAll();
+  goTo("game");
+}
+
+function expectedPuzzleMove() {
+  if (!state.puzzle) return null;
+  const puzzle = PUZZLES[state.puzzle.index];
+  const uci = puzzle.solution[state.puzzle.ply];
+  if (!uci) return null;
+  return { uci, from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || undefined };
+}
+
+function showPuzzleFeedback(kind) {
+  const banner = $("puzzle-banner");
+  const status = $("puzzle-status");
+  const puzzle = PUZZLES[state.puzzle.index];
+  const sideName = state.chess.turn() === "w" ? "White" : "Black";
+  banner.classList.remove("puzzle-wrong", "puzzle-correct", "puzzle-solved");
+  if (kind === "start") {
+    status.textContent = `${puzzle.title} \u2014 ${puzzle.theme}. ${sideName} to move.`;
+  } else if (kind === "wrong") {
+    status.textContent = "Not quite \u2014 try again.";
+    banner.classList.add("puzzle-wrong");
+  } else if (kind === "correct") {
+    status.textContent = "Correct!";
+    banner.classList.add("puzzle-correct");
+  } else if (kind === "your-move") {
+    status.textContent = `Your move \u2014 ${puzzle.theme}.`;
+  } else if (kind === "solved") {
+    status.textContent = "Solved! Nicely played.";
+    banner.classList.add("puzzle-solved");
+    hide($("btn-puzzle-hint"));
+    show($("btn-puzzle-next"));
+  }
+}
+
+function attemptPuzzleMove({ from, to, promotion }) {
+  if (!state.puzzle || state.puzzle.awaitingReply || state.viewingPly !== null) return;
+  const expected = expectedPuzzleMove();
+  if (!expected) return; // already solved, or malformed puzzle data — nothing to check against
+  const uci = `${from}${to}${promotion || ""}`;
+  if (uci !== expected.uci) {
+    // Wrong (but possibly otherwise-legal) move: never touch state.chess at
+    // all, so there's nothing to undo — the board simply doesn't move.
+    boardUI.clearSelection();
+    playWrong();
+    showPuzzleFeedback("wrong");
+    return;
+  }
+
+  const mv = state.chess.move({ from, to, promotion: promotion || undefined });
+  if (!mv) { playWrong(); showPuzzleFeedback("wrong"); return; } // shouldn't happen for validated puzzle data, but stay defensive
+
+  state.puzzle.ply++;
+  boardUI.setLastMove(mv.from, mv.to);
+  boardUI.clearHintArrow();
+  playSoundForMove(mv, state.chess);
+  renderAll();
+
+  const puzzle = PUZZLES[state.puzzle.index];
+  if (state.puzzle.ply >= puzzle.solution.length) {
+    markPuzzleSolved(puzzle.id);
+    showPuzzleFeedback("solved");
+    return;
+  }
+
+  showPuzzleFeedback("correct");
+  state.puzzle.awaitingReply = true; // block further input while the scripted reply plays out
+  const sessionAtSchedule = puzzleSessionId;
+  const replyUci = puzzle.solution[state.puzzle.ply];
+  const rFrom = replyUci.slice(0, 2), rTo = replyUci.slice(2, 4), rPromotion = replyUci.slice(4) || undefined;
+  setTimeout(() => {
+    // The player may have hit Retry, Next, or left the screen during the
+    // pause. A Retry of this very puzzle still bumps puzzleSessionId, so
+    // this catches that case too, not just switching to a different puzzle.
+    if (state.mode !== "puzzle" || !state.puzzle || puzzleSessionId !== sessionAtSchedule) return;
+    const rmv = state.chess.move({ from: rFrom, to: rTo, promotion: rPromotion });
+    state.puzzle.ply++;
+    state.puzzle.awaitingReply = false;
+    if (rmv) {
+      boardUI.setLastMove(rmv.from, rmv.to);
+      playSoundForMove(rmv, state.chess);
+    }
+    renderAll();
+    showPuzzleFeedback("your-move");
+  }, 550);
+}
+
+$("btn-puzzle-hint").addEventListener("click", () => {
+  const expected = expectedPuzzleMove();
+  if (expected) boardUI.showHintArrow(expected.from, expected.to);
+});
+$("btn-puzzle-retry").addEventListener("click", () => {
+  if (state.puzzle) startPuzzle(state.puzzle.index);
+});
+$("btn-puzzle-next").addEventListener("click", () => {
+  if (!state.puzzle) return;
+  const next = state.puzzle.index + 1;
+  if (next >= PUZZLES.length) {
+    toast("You've solved every puzzle here \u2014 starting over");
+    startPuzzle(0);
+  } else {
+    startPuzzle(next);
+  }
+});
+
 function attemptLocalMove({ from, to, promotion }) {
+  if (state.mode === "puzzle") { attemptPuzzleMove({ from, to, promotion }); return; }
   const mv = state.chess.move({ from, to, promotion: promotion || undefined });
   if (!mv) return;
   state.viewingPly = null;
   boardUI.setLastMove(mv.from, mv.to);
+  playSoundForMove(mv, state.chess);
   renderAll();
 
   if (state.mode === "online") {
@@ -860,6 +1290,7 @@ function requestAiMove() {
     const mv = state.chess.move({ from: e.data.move.from, to: e.data.move.to, promotion: e.data.move.promotion || undefined });
     state.viewingPly = null;
     if (mv) boardUI.setLastMove(mv.from, mv.to);
+    playSoundForMove(mv, state.chess);
     renderAll();
     if (!checkGameOver()) saveGame();
   };
@@ -900,14 +1331,21 @@ function showGameOver({ eyebrow, title, detail }) {
   hideDrawOfferBanner();
   stopClockTimer();
   clearSavedGame();
+  playGameEnd();
   $("gameover-eyebrow").textContent = eyebrow;
   $("gameover-title").textContent = title;
   $("gameover-detail").textContent = detail;
+  if (state.isSpectator) hide($("gameover-rematch")); else show($("gameover-rematch"));
   show($("overlay-gameover"));
   renderClocks(); // reflect the final (paused, non-live) clock state
 }
 
 $("gameover-rematch").addEventListener("click", () => {
+  if (state.isSpectator) return; // shouldn't be reachable — the button is hidden — but never trust that alone
+  if (state.mode === "online" && !state.onlineConnected) {
+    toast("Can't reach your opponent right now \u2014 try again once reconnected");
+    return;
+  }
   hide($("overlay-gameover"));
   const clockBase = state.clock ? state.clock.base : null;
   if (state.mode === "single") {
@@ -958,6 +1396,18 @@ $("btn-undo").addEventListener("click", () => {
   saveGame();
 });
 $("btn-flip").addEventListener("click", () => boardUI.flip());
+
+function refreshSoundBtn() {
+  const btn = $("btn-sound");
+  const on = isSoundOn();
+  btn.textContent = on ? "\u{1F50A} Sound" : "\u{1F507} Muted";
+  btn.setAttribute("aria-pressed", String(on));
+}
+refreshSoundBtn();
+$("btn-sound").addEventListener("click", () => {
+  setSoundOn(!isSoundOn());
+  refreshSoundBtn();
+});
 $("btn-copy-pgn").addEventListener("click", async () => {
   const pgn = state.chess.pgn();
   if (!pgn) { toast("No moves yet"); return; }
@@ -984,7 +1434,11 @@ $("btn-newgame").addEventListener("click", () => {
 $("btn-resign").addEventListener("click", () => {
   if (state.gameOver) return;
   if (state.mode === "online") {
-    state.online.send({ type: "resign" });
+    if (!state.onlineConnected) {
+      toast("Can't reach your opponent right now \u2014 try again once reconnected");
+      return;
+    }
+    state.online.send({ type: "resign", color: state.localColor });
     showGameOver({ eyebrow: "Resignation", title: `${state.localColor === "w" ? "Black" : "White"} wins`, detail: "You resigned." });
   } else if (state.mode === "single") {
     showGameOver({ eyebrow: "Resignation", title: `${state.localColor === "w" ? "Black" : "White"} wins`, detail: "You resigned." });
@@ -999,6 +1453,7 @@ $("game-quit").addEventListener("click", () => {
   saveGame(); // checkpoint the freshest clock reading before stopping the timer
   stopClockTimer();
   if (state.online) { state.online.close(); state.online = null; }
+  state.puzzle = null;
   hide($("overlay-gameover"));
   refreshResumeBanner();
   goTo("home");
@@ -1012,6 +1467,10 @@ $("chat-form").addEventListener("submit", (e) => {
   const input = $("chat-input");
   const text = input.value.trim();
   if (!text || !state.online) return;
+  if (!state.onlineConnected) {
+    toast("Can't reach your opponent right now \u2014 message not sent");
+    return;
+  }
   appendChat("You", text);
   state.online.send({ type: "chat", text });
   input.value = "";
@@ -1085,10 +1544,27 @@ function renderMoveList() {
   const highlightPly = state.viewingPly !== null ? state.viewingPly : hist.length;
   const highlightClass = state.viewingPly !== null ? "mv-viewing" : "mv-current";
 
+  // A puzzle (or any custom-FEN position) can start mid-game — pull the
+  // real starting move number out of the FEN chess.js stashed in the PGN
+  // header, so e.g. the Scholar's Mate puzzle reads "4. Qxf7#" rather than
+  // relabeling it as move 1. Only handles a White-to-move start FEN; every
+  // shipped puzzle is White-to-move, and a Black-to-move custom start is
+  // rare enough not to be worth a second numbering path for zero current
+  // puzzles that would exercise it.
+  let startMoveNumber = 1;
+  const startFen = state.chess.header?.().FEN;
+  if (startFen) {
+    const parts = startFen.split(" ");
+    if (parts[1] === "w") {
+      const n = parseInt(parts[5], 10);
+      if (!Number.isNaN(n)) startMoveNumber = n;
+    }
+  }
+
   for (let i = 0; i < hist.length; i += 2) {
     const num = document.createElement("li");
     num.className = "mv-num";
-    num.textContent = `${i / 2 + 1}.`;
+    num.textContent = `${startMoveNumber + i / 2}.`;
 
     const white = document.createElement("li");
     white.className = "mv-white";

@@ -5,6 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Endgame — Chess, Local &amp; Online</title>
 <meta name="description" content="Play chess against the computer, pass-and-play locally, or challenge a friend online with a shared link.">
+<!--
+  Scoped to what this app actually loads: same-origin assets, chess.js from
+  jsDelivr, PeerJS from unpkg, Google Fonts, and the PeerJS broker for the
+  online-mode signaling handshake (wss/https to *.peerjs.com; the WebRTC
+  data channel itself is direct browser-to-browser and isn't something CSP
+  connect-src governs). style-src needs 'unsafe-inline' because the promotion
+  picker and the drag-and-drop ghost piece are positioned via inline
+  `el.style.x = ...`, which CSP treats the same as a style="" attribute.
+  Verify the "Play Online" flow still connects after deploying — this
+  couldn't be exercised against a live WebRTC handshake in the environment
+  this was written in, and browsers only report the violation to the
+  console, not to the person testing it.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.peerjs.com wss://*.peerjs.com; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none';">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -60,6 +74,13 @@
       <span class="plaque-icon" aria-hidden="true">♝</span>
       <span class="plaque-title">Play Online</span>
       <span class="plaque-desc">Open a table, send the link, play live. No account needed.</span>
+    </button>
+
+    <button class="mode-plaque" id="mode-puzzle" role="listitem">
+      <span class="plaque-eyebrow">IV</span>
+      <span class="plaque-icon" aria-hidden="true">♛</span>
+      <span class="plaque-title">Puzzles</span>
+      <span class="plaque-desc">A handful of tactics. Find the winning move.</span>
     </button>
   </div>
 
@@ -136,6 +157,11 @@
         <button class="pill pill-small" id="lobby-copy-btn">Copy</button>
       </div>
       <p class="lobby-hint">You'll play White. The board opens as soon as they join.</p>
+      <label for="lobby-watch-link-input">Or share a read-only link so others can watch</label>
+      <div class="link-row">
+        <input type="text" id="lobby-watch-link-input" readonly>
+        <button class="pill pill-small" id="lobby-watch-copy-btn">Copy</button>
+      </div>
     </div>
   </div>
 
@@ -157,6 +183,7 @@
   <header class="game-topbar">
     <button class="back-link" id="game-quit">&larr; Leave table</button>
     <div class="game-mode-tag" id="game-mode-tag"></div>
+    <span class="spectator-count hidden" id="spectator-count"></span>
     <div class="thread" id="thread-indicator" hidden>
       <span class="thread-node" data-role="you">You</span>
       <span class="thread-line"><span class="thread-pulse"></span></span>
@@ -185,6 +212,9 @@
         <button class="pill pill-small" id="draw-accept-btn">Accept</button>
         <button class="pill pill-small" id="draw-decline-btn">Decline</button>
       </div>
+      <div class="status-banner hidden" id="puzzle-banner" role="status" aria-live="polite">
+        <span id="puzzle-status"></span>
+      </div>
       <div class="board-wrap" id="board-wrap">
         <div class="board" id="board" role="grid" aria-label="Chess board"></div>
         <div class="promo-picker hidden" id="promo-picker"></div>
@@ -192,10 +222,14 @@
       <div class="board-controls">
         <button class="pill pill-small" id="btn-undo">Undo</button>
         <button class="pill pill-small" id="btn-flip">Flip board</button>
+        <button class="pill pill-small" id="btn-sound" aria-pressed="true">&#128266; Sound</button>
         <button class="pill pill-small" id="btn-newgame">New game</button>
         <button class="pill pill-small hidden" id="btn-draw-offer">Offer draw</button>
         <button class="pill pill-small" id="btn-analyze">Analyze</button>
         <button class="pill pill-small pill-danger" id="btn-resign">Resign</button>
+        <button class="pill pill-small hidden" id="btn-puzzle-hint">Hint</button>
+        <button class="pill pill-small hidden" id="btn-puzzle-retry">Retry</button>
+        <button class="pill pill-small hidden" id="btn-puzzle-next">Next puzzle</button>
       </div>
       <div class="analysis-panel hidden" id="analysis-panel">
         <div class="eval-bar" aria-hidden="true"><div class="eval-bar-fill" id="eval-bar-fill"></div></div>
@@ -246,7 +280,7 @@
 <!-- ============ TOAST ============ -->
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" integrity="sha384-nlUQ8ZqCbvStErob+biJNzSgltf6urV3VGqhfIfzhmg9RXmpeRm76ELw0pYnKlTR" crossorigin="anonymous"></script>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

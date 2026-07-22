@@ -14,6 +14,8 @@ const APP_SHELL = [
   "./js/board.js",
   "./js/ai-worker.js",
   "./js/network.js",
+  "./js/sound.js",
+  "./js/puzzles.js",
   "./js/main.js",
   "./icons/icon-16.png",
   "./icons/icon-32.png",
@@ -58,10 +60,13 @@ self.addEventListener("fetch", (event) => {
   const url = request.url;
 
   // Navigations: try the network first (so people get the latest app shell
-  // when online), fall back to the cached shell when offline.
+  // when online), fall back to the cached shell when offline. cache:
+  // "no-store" bypasses the browser's own HTTP cache — without it, GitHub
+  // Pages' CDN Cache-Control headers (~10 min max-age) could still hand back
+  // a stale index.html here even though this is nominally "network-first."
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request)
+      fetch(request, { cache: "no-store" })
         .then((resp) => {
           caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", resp.clone()));
           return resp;
@@ -76,7 +81,10 @@ self.addEventListener("fetch", (event) => {
   if (sameOrigin || isRuntimeCandidate(url)) {
     event.respondWith(
       caches.match(request).then((cached) => {
-        const network = fetch(request)
+        // Same cache-bypass reasoning as above: the "revalidate" half of
+        // stale-while-revalidate is only meaningful if it's actually
+        // hitting the network, not a CDN-cached copy of the old deploy.
+        const network = fetch(request, { cache: "no-store" })
           .then((resp) => {
             if (resp && resp.ok) {
               const clone = resp.clone();

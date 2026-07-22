@@ -12,6 +12,16 @@ A fully static chess site. No build step, no backend, no database.
   There is no game server: moves travel peer-to-peer once the link is opened.
   A public PeerJS broker (`0.peerjs.com`, free, run by the PeerJS project) is
   used only for the initial handshake, the same job an ICE/STUN server does.
+- **Spectators** — the host can also share a second, read-only "watch" link
+  (adds `&watch=1`) so others can follow an online game live without being
+  able to move anything. Works mid-game too, and catches a reconnecting
+  spectator back up on whatever they missed.
+- **Sound** — move/capture/check/game-end effects, synthesized on the fly
+  (no audio files to ship), toggleable from the board controls.
+- **Puzzles** — a small bundled set of tactics (mate-in-1/2, forks, pins).
+  Every solution line ships pre-verified against chess.js itself, not typed
+  in from memory. Progress is remembered locally so it resumes where you
+  left off.
 
 ## Files
 
@@ -84,8 +94,12 @@ on GitHub Pages it's always overwritten by the workflow before publishing.
 - The invite link looks like `.../index.html?room=endgame-ab12cd`. Opening it
   auto-detects the `room` parameter and joins immediately — no extra steps
   for the guest.
-- If the peer disconnects mid-game, the board says so; there's no reconnect
-  logic today (a fresh link/rematch is the simplest recovery).
+- If the peer disconnects mid-game, the board says so and both sides try to
+  reconnect automatically (the guest redials the host, the host restores its
+  link to the broker so a reconnecting guest has somewhere to dial back
+  into). On reconnect the two browsers exchange a `sync` message so whoever
+  missed moves while disconnected catches back up. If reconnecting doesn't
+  work out, a fresh link/rematch is still the fallback.
 - Because everything is peer-to-peer, both browsers must be able to open a
   WebRTC connection to each other. This works in the vast majority of home
   and mobile networks; a small number of very restrictive corporate networks

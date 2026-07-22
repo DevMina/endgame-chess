@@ -23,15 +23,39 @@ export class BoardUI {
     this.squareEls = new Map();
     this.focusedSquare = null; // square id currently in the keyboard tab order
 
+    // Drag-and-drop state. Click-to-move (select, then click a target) keeps
+    // working unchanged; this just layers an alternative gesture on top of
+    // the same selection/legal-move machinery.
+    this._pointerDrag = null; // { pointerId, from, pieceEl, ghost, startX, startY, dragging }
+    this._suppressNextClick = false; // swallow the synthetic click a pointerup-after-drag generates
+    this._onPointerMove = this._onPointerMove.bind(this);
+    this._onPointerUp = this._onPointerUp.bind(this);
+    this._onPointerCancel = this._onPointerCancel.bind(this);
+    this._onLostPointerCapture = this._onLostPointerCapture.bind(this);
+
+    // Analysis-hint arrow overlay. A single persistent SVG node, re-appended
+    // as the last child of boardEl every time _buildGrid() rebuilds the
+    // squares (e.g. on flip) — its own contents (the drawn arrow, if any)
+    // survive that reattachment since innerHTML="" on the parent only
+    // detaches this node, it doesn't tear down this node's own subtree.
+    this._hintArrow = null; // { from, to } of the currently-shown arrow, if any
+    this.arrowSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this.arrowSvg.setAttribute("viewBox", "0 0 8 8");
+    this.arrowSvg.setAttribute("preserveAspectRatio", "none");
+    this.arrowSvg.setAttribute("aria-hidden", "true");
+    this.arrowSvg.classList.add("hint-arrow-layer");
+
     this._buildGrid();
     this.boardEl.addEventListener("click", (e) => this._onSquareClick(e));
     this.boardEl.addEventListener("keydown", (e) => this._onKeyDown(e));
+    this.boardEl.addEventListener("pointerdown", (e) => this._onPointerDown(e));
   }
 
   setOrientation(color) {
     this.orientation = color;
     this._buildGrid();
     this.render();
+    if (this._hintArrow) this.showHintArrow(this._hintArrow.from, this._hintArrow.to);
   }
 
   flip() {
@@ -84,6 +108,7 @@ export class BoardUI {
         this.squareEls.set(id, sq);
       }
     }
+    this.boardEl.appendChild(this.arrowSvg);
 
     // Keep the previous focus square if it still exists (e.g. after a flip); otherwise default to the first square in DOM order.
     if (!this.focusedSquare || !this.squareEls.has(this.focusedSquare)) this.focusedSquare = firstId;
@@ -137,6 +162,68 @@ export class BoardUI {
     }
   }
 
+  /* ---------------------------------------------------------
+     Analysis-hint arrow
+  --------------------------------------------------------- */
+  showHintArrow(from, to) {
+    const a = this._squareCenter(from);
+    const b = this._squareCenter(to);
+    if (!a || !b) { this.clearHintArrow(); return; }
+    this._hintArrow = { from, to };
+    this._drawArrow(a, b);
+  }
+
+  clearHintArrow() {
+    this._hintArrow = null;
+    this.arrowSvg.textContent = "";
+  }
+
+  // Square id -> center point in the same 0-8 grid-unit space as the SVG's
+  // viewBox, accounting for board orientation the same way _buildGrid() maps
+  // file/rank to screen row/column.
+  _squareCenter(id) {
+    if (!id || id.length < 2) return null;
+    const file = "abcdefgh".indexOf(id[0]);
+    const rank = Number(id[1]) - 1;
+    if (file < 0 || Number.isNaN(rank) || rank < 0 || rank > 7) return null;
+    const col = this.orientation === "w" ? file : 7 - file;
+    const row = this.orientation === "w" ? 7 - rank : rank;
+    return { x: col + 0.5, y: row + 0.5 };
+  }
+
+  _drawArrow(a, b) {
+    const ns = "http://www.w3.org/2000/svg";
+    this.arrowSvg.textContent = ""; // clear any previous arrow first
+
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len; // unit vector along the arrow
+    const px = -uy, py = ux; // perpendicular unit vector, for the arrowhead width
+
+    const startX = a.x + ux * 0.16, startY = a.y + uy * 0.16; // pull back from the source square's center a bit
+    const tipX = b.x - ux * 0.08, tipY = b.y - uy * 0.08; // stop just shy of the target center
+    const headLen = 0.3, headWidth = 0.24;
+    const baseX = tipX - ux * headLen, baseY = tipY - uy * headLen;
+
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("x1", startX);
+    line.setAttribute("y1", startY);
+    line.setAttribute("x2", baseX);
+    line.setAttribute("y2", baseY);
+    line.setAttribute("stroke-width", "0.11");
+    line.setAttribute("stroke-linecap", "round");
+    line.classList.add("hint-arrow-shape");
+
+    const head = document.createElementNS(ns, "polygon");
+    const leftX = baseX + px * (headWidth / 2), leftY = baseY + py * (headWidth / 2);
+    const rightX = baseX - px * (headWidth / 2), rightY = baseY - py * (headWidth / 2);
+    head.setAttribute("points", `${tipX},${tipY} ${leftX},${leftY} ${rightX},${rightY}`);
+    head.classList.add("hint-arrow-shape");
+
+    this.arrowSvg.appendChild(line);
+    this.arrowSvg.appendChild(head);
+  }
+
   _updateHighlights() {
     for (const [id, sq] of this.squareEls) {
       sq.classList.toggle("selected", id === this.selected);
@@ -156,12 +243,152 @@ export class BoardUI {
   }
 
   _onSquareClick(e) {
+    if (this._suppressNextClick) {
+      // A drag just committed (or was released over an invalid square) on
+      // pointerup; the browser still synthesizes a click afterward, which
+      // would otherwise re-run _activateSquare and could re-toggle
+      // selection right after a move already went through.
+      this._suppressNextClick = false;
+      return;
+    }
     const sqEl = e.target.closest(".sq");
     if (!sqEl) return;
     const id = sqEl.dataset.square;
     this.focusedSquare = id;
     this._applyRovingTabIndex();
     this._activateSquare(id);
+  }
+
+  /* ---------------------------------------------------------
+     Drag and drop (mouse + touch, via Pointer Events)
+  --------------------------------------------------------- */
+  _onPointerDown(e) {
+    if (e.pointerType === "mouse" && e.button !== 0) return; // primary button / touch only
+    const sqEl = e.target.closest(".sq");
+    if (!sqEl) return;
+    const id = sqEl.dataset.square;
+    const chess = this.opts.getGame();
+    const piece = chess.get(id);
+    // Only a movable piece of the side to move can start a drag; anything
+    // else (empty square, opponent's piece, not-your-turn) falls through to
+    // the normal click handling untouched.
+    if (!piece || piece.color !== chess.turn() || !this.opts.canMove(id)) return;
+
+    this._hidePromoPicker();
+    this.focusedSquare = id;
+    this._applyRovingTabIndex();
+    this.selected = id;
+    this.legalTargets = chess.moves({ square: id, verbose: true });
+    this._updateHighlights();
+
+    const pieceEl = sqEl.querySelector(".piece");
+    if (!pieceEl) return;
+
+    this._pointerDrag = {
+      pointerId: e.pointerId,
+      from: id,
+      sqEl,
+      pieceEl,
+      ghost: null,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+    };
+    sqEl.setPointerCapture(e.pointerId);
+    sqEl.addEventListener("pointermove", this._onPointerMove);
+    sqEl.addEventListener("pointerup", this._onPointerUp);
+    sqEl.addEventListener("pointercancel", this._onPointerCancel);
+    sqEl.addEventListener("lostpointercapture", this._onLostPointerCapture);
+  }
+
+  _onPointerMove(e) {
+    const drag = this._pointerDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+
+    if (!drag.dragging) {
+      // Small deadzone so an ordinary tap/click doesn't get mistaken for a drag.
+      if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < 6) return;
+      drag.dragging = true;
+      drag.pieceEl.classList.add("dragging");
+      drag.ghost = this._createDragGhost(drag.sqEl, drag.pieceEl, e.clientX, e.clientY);
+    }
+    this._positionDragGhost(drag.ghost, e.clientX, e.clientY);
+  }
+
+  _onPointerUp(e) {
+    const drag = this._pointerDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    this._teardownPointerDrag(drag);
+
+    if (!drag.dragging) return; // a plain tap/click — let the click event handle it as usual
+
+    this._suppressNextClick = true;
+    drag.pieceEl.classList.remove("dragging");
+    drag.ghost?.remove();
+
+    const dropEl = document.elementFromPoint(e.clientX, e.clientY)?.closest(".sq");
+    const dropId = dropEl?.dataset.square;
+    const target = dropId ? this.legalTargets.find((m) => m.to === dropId) : null;
+    if (target) {
+      this._commitMove(drag.from, dropId, target);
+    } else {
+      // Dropped somewhere that isn't a legal target (including off the
+      // board entirely) — snap back, but keep the piece selected so the
+      // legal-move dots are still visible for a follow-up click.
+      this._updateHighlights();
+    }
+    // Safety net: if the browser doesn't fire a click after this pointerup
+    // for some reason, don't leave a stray click permanently swallowed.
+    setTimeout(() => { this._suppressNextClick = false; }, 400);
+  }
+
+  _onPointerCancel(e) {
+    const drag = this._pointerDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    this._teardownPointerDrag(drag);
+    drag.pieceEl.classList.remove("dragging");
+    drag.ghost?.remove();
+    this._updateHighlights();
+  }
+
+  // Fires if pointer capture is released for any reason without a pointerup
+  // or pointercancel ever arriving first — e.g. the window/tab loses focus
+  // mid-drag (switching apps on mobile). Without this, a stuck ghost piece
+  // and a permanently-suppressed next click would be the only way the drag
+  // ever "ends", and the board would look broken until reloaded.
+  _onLostPointerCapture(e) {
+    const drag = this._pointerDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    this._onPointerCancel(e);
+  }
+
+  _teardownPointerDrag(drag) {
+    drag.sqEl.removeEventListener("pointermove", this._onPointerMove);
+    drag.sqEl.removeEventListener("pointerup", this._onPointerUp);
+    drag.sqEl.removeEventListener("pointercancel", this._onPointerCancel);
+    drag.sqEl.removeEventListener("lostpointercapture", this._onLostPointerCapture);
+    if (drag.sqEl.hasPointerCapture?.(drag.pointerId)) drag.sqEl.releasePointerCapture(drag.pointerId);
+    this._pointerDrag = null;
+  }
+
+  _createDragGhost(sqEl, pieceEl, clientX, clientY) {
+    const rect = sqEl.getBoundingClientRect();
+    const ghost = document.createElement("span");
+    ghost.className = `${pieceEl.className} drag-ghost`;
+    ghost.textContent = pieceEl.textContent;
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.height = `${rect.height}px`;
+    ghost.style.fontSize = getComputedStyle(sqEl).fontSize;
+    document.body.appendChild(ghost);
+    this._positionDragGhost(ghost, clientX, clientY);
+    return ghost;
+  }
+
+  _positionDragGhost(ghost, clientX, clientY) {
+    if (!ghost) return;
+    const w = parseFloat(ghost.style.width);
+    const h = parseFloat(ghost.style.height);
+    ghost.style.transform = `translate(${clientX - w / 2}px, ${clientY - h / 2}px)`;
   }
 
   _onKeyDown(e) {

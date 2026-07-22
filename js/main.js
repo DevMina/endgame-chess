@@ -276,6 +276,29 @@ $("mode-online").addEventListener("click", () => {
   resetLobby();
 });
 $("mode-puzzle").addEventListener("click", () => startPuzzle(firstUnsolvedPuzzleIndex()));
+$("mode-contact").addEventListener("click", () => show($("overlay-contact")));
+$("contact-cancel").addEventListener("click", () => hide($("overlay-contact")));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("overlay-contact").classList.contains("hidden")) hide($("overlay-contact"));
+});
+$("contact-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("contact-name").value.trim();
+  const subject = $("contact-subject").value.trim() || "Endgame Chess feedback";
+  const message = $("contact-message").value.trim();
+  if (!message) return; // required attribute already covers this in practice, but stay defensive
+  const body = name ? `${message}\n\n\u2014 ${name}` : message;
+  // No backend on this static site, so "sending" means handing off to
+  // whatever email client the browser/OS has configured — this opens a
+  // pre-filled draft rather than transmitting anything from here directly.
+  const mailto = `mailto:mina.abdo2030@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailto;
+  hide($("overlay-contact"));
+  $("contact-form").reset();
+});
+
+const footerYearEl = $("footer-year");
+if (footerYearEl) footerYearEl.textContent = String(new Date().getFullYear());
 document.querySelectorAll('[data-back="home"]').forEach((btn) =>
   btn.addEventListener("click", () => {
     if (state.online) { state.online.close(); state.online = null; }

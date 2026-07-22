@@ -82,6 +82,13 @@
       <span class="plaque-title">Puzzles</span>
       <span class="plaque-desc">A handful of tactics. Find the winning move.</span>
     </button>
+
+    <button class="mode-plaque" id="mode-contact" role="listitem">
+      <span class="plaque-eyebrow">V</span>
+      <span class="plaque-icon" aria-hidden="true">&#9993;</span>
+      <span class="plaque-title">Contact Us</span>
+      <span class="plaque-desc">Questions, bugs, or feedback &mdash; send a quick note.</span>
+    </button>
   </div>
 
   <footer class="home-footer">
@@ -277,8 +284,32 @@
   </div>
 </div>
 
+<div id="overlay-contact" class="overlay hidden">
+  <div class="overlay-card overlay-card-form">
+    <p class="overlay-eyebrow">Contact</p>
+    <h2>Send a message</h2>
+    <p class="contact-hint">This opens your email app addressed to the developer &mdash; nothing is sent from here directly, since this site has no backend.</p>
+    <form id="contact-form" class="contact-form">
+      <label for="contact-name">Name (optional)</label>
+      <input type="text" id="contact-name" autocomplete="name">
+      <label for="contact-subject">Subject</label>
+      <input type="text" id="contact-subject" placeholder="e.g. Bug report" required>
+      <label for="contact-message">Message</label>
+      <textarea id="contact-message" rows="5" required></textarea>
+      <div class="overlay-actions">
+        <button type="submit" class="cta-button">Open email app</button>
+        <button type="button" class="pill" id="contact-cancel">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ============ TOAST ============ -->
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<footer class="site-footer">
+  <p>&copy; <span id="footer-year"></span> Mina Abdo. All rights reserved.</p>
+</footer>
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" integrity="sha384-nlUQ8ZqCbvStErob+biJNzSgltf6urV3VGqhfIfzhmg9RXmpeRm76ELw0pYnKlTR" crossorigin="anonymous"></script>
 <script type="module" src="js/main.js"></script>

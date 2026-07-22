@@ -786,3 +786,53 @@ a { color: var(--brass-bright); }
 @media (prefers-reduced-motion: reduce) {
   .thread-pulse, .mode-plaque, .cta-button { animation: none !important; transition: none !important; }
 }
+
+/* ========================================================
+   Contact form
+   ======================================================== */
+.overlay-card-form { max-width: 440px; text-align: left; }
+.overlay-card-form h2 { text-align: center; }
+.contact-hint {
+  color: var(--ivory-dim);
+  font-size: 0.82rem;
+  margin-bottom: 1.4rem;
+  text-align: center;
+}
+.contact-form { display: flex; flex-direction: column; gap: 0.4rem; }
+.contact-form label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+.contact-form input,
+.contact-form textarea {
+  background: var(--ink-soft);
+  border: 1px solid var(--hairline);
+  color: var(--ivory);
+  padding: 0.5rem 0.7rem;
+  border-radius: 3px;
+  font-size: 0.88rem;
+  font-family: var(--font-body);
+  resize: vertical;
+}
+.contact-form input:focus,
+.contact-form textarea:focus {
+  outline: 2px solid var(--brass);
+  outline-offset: 1px;
+}
+.contact-form .overlay-actions { margin-top: 1.2rem; }
+
+/* ========================================================
+   Footer
+   ======================================================== */
+.site-footer {
+  text-align: center;
+  padding: 1.2rem 1rem 1.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
